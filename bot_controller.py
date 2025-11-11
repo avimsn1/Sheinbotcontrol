@@ -26,7 +26,7 @@ class SheinStockMonitor:
         self.monitoring = False
         self.monitor_thread = None
         self.setup_database()
-        print("🤖 Shein Monitor initialized - Type 'help' for commands")
+        print("🤖 Shein Monitor initialized - Starting automatically...")
     
     def setup_database(self):
         """Initialize SQLite database"""
@@ -69,6 +69,7 @@ class SheinStockMonitor:
                             json_str = script_content.split('window.goodsDetailData = ')[1].split(';')[0]
                             data = json.loads(json_str)
                             total_stock = data.get('facets', {}).get('totalResults', 0)
+                            print(f"✅ Found stock: {total_stock} items")
                             return total_stock
                     except Exception as e:
                         continue
@@ -78,8 +79,11 @@ class SheinStockMonitor:
                 pattern = r'"facets":\s*\{[^}]*"totalResults":\s*(\d+)'
                 match = re.search(pattern, response_text)
                 if match:
-                    return int(match.group(1))
+                    total_stock = int(match.group(1))
+                    print(f"✅ Found stock via regex: {total_stock} items")
+                    return total_stock
             
+            print("❌ Could not find stock count")
             return 0
             
         except Exception as e:
@@ -133,144 +137,95 @@ class SheinStockMonitor:
             
             message = f"""
 🚨 SVerse STOCK ALERT! 🚨
-📈 Stock Increased: +{stock_change} items
-📊 Current: {current_stock} items
-⏰ {datetime.now().strftime('%H:%M:%S')}
+
+📈 **Stock Increased Significantly!**
+
+🔄 Change: +{stock_change} items
+📊 Current Total: {current_stock} items
+📉 Previous Total: {previous_stock} items
+
+🔗 Check Now: {self.config['api_url']}
+
+⏰ Alert Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             """.strip()
             
             asyncio.run(self.send_telegram_message(message))
+            print("✅ Telegram alert sent!")
         else:
             self.save_current_stock(current_stock, stock_change)
     
     def start_monitoring_loop(self):
         """Start monitoring in background thread"""
         def monitor():
+            print("🔄 Monitoring loop started!")
             while self.monitoring:
                 self.check_stock()
                 time.sleep(self.config['check_interval_minutes'] * 60)
+            print("🛑 Monitoring loop stopped")
         
         self.monitor_thread = threading.Thread(target=monitor)
         self.monitor_thread.daemon = True
         self.monitor_thread.start()
     
-    # COMMAND METHODS
     def start(self):
-        """Start monitoring command"""
+        """Start monitoring"""
         if self.monitoring:
             print("🔄 Monitoring is already running!")
             return
         
         self.monitoring = True
         self.start_monitoring_loop()
+        
+        # Send startup message
+        asyncio.run(self.send_startup_message())
+        
         print("✅ Monitoring STARTED - checking every 5 minutes")
-        asyncio.run(self.send_telegram_message("✅ Shein Monitor STARTED"))
     
-    def stop(self):
-        """Stop monitoring command"""
-        if not self.monitoring:
-            print("❌ Monitoring is not running!")
-            return
-        
-        self.monitoring = False
-        print("🛑 Monitoring STOPPED")
-        asyncio.run(self.send_telegram_message("🛑 Shein Monitor STOPPED"))
-    
-    def status(self):
-        """Check status command"""
+    async def send_startup_message(self):
+        """Send startup message to Telegram"""
         current_stock = self.get_shein_stock_count()
-        previous_stock = self.get_previous_stock()
-        stock_change = current_stock - previous_stock
         
-        status_info = f"""
-📊 SHEIN MONITOR STATUS
-🔄 Monitoring: {'✅ RUNNING' if self.monitoring else '❌ STOPPED'}
-📈 Current Stock: {current_stock} items
-📉 Previous Stock: {previous_stock} items
-🔄 Stock Change: {stock_change} items
-⏰ Last Check: {datetime.now().strftime('%H:%M:%S')}
+        message = f"""
+✅ SHEIN MONITOR STARTED!
+
+📊 Current Stock: {current_stock} items
+⏰ Check Interval: {self.config['check_interval_minutes']} minutes
+📈 Min Increase: {self.config['min_increase_threshold']} items
+
+🤖 I will notify you when stock increases significantly!
         """.strip()
         
-        print(status_info)
-        return status_info
-    
-    def check(self):
-        """Force immediate check command"""
-        print("🔍 Checking stock now...")
-        current_stock = self.get_shein_stock_count()
-        previous_stock = self.get_previous_stock()
-        stock_change = current_stock - previous_stock
-        
-        print(f"📊 Current: {current_stock} | Previous: {previous_stock} | Change: {stock_change}")
-        self.save_current_stock(current_stock, stock_change)
-    
-    def test(self):
-        """Send test notification command"""
-        print("📨 Sending test notification...")
-        message = "🧪 TEST - Shein Monitor is working!"
-        success = asyncio.run(self.send_telegram_message(message))
-        if success:
-            print("✅ Test notification sent!")
-        else:
-            print("❌ Failed to send test notification")
-    
-    def help(self):
-        """Show help command"""
-        help_text = """
-🤖 SHEIN STOCK MONITOR - COMMANDS:
-
-start   - Start continuous monitoring (checks every 5min)
-stop    - Stop monitoring
-status  - Check current stock and status
-check   - Force immediate stock check
-test    - Send test Telegram notification
-help    - Show this help
-exit    - Exit the program
-
-💡 Example: Type 'start' to begin monitoring
-        """.strip()
-        
-        print(help_text)
+        await self.send_telegram_message(message)
+        print("✅ Startup message sent to Telegram!")
 
 def main():
-    """Main function with interactive commands"""
-    print("🚀 Starting Shein Stock Monitor...")
-    print("💡 Type 'help' to see available commands")
+    """Main function - starts automatically"""
+    print("=" * 50)
+    print("🚀 SHEIN STOCK MONITOR - CLOUD VERSION")
+    print("=" * 50)
+    print("💡 This version runs 24/7 automatically")
+    print("📱 Sends Telegram alerts when stock increases")
+    print("⏰ Checks every 5 minutes")
+    print("=" * 50)
     
     monitor = SheinStockMonitor(CONFIG)
     
-    # Command mapping
-    commands = {
-        'start': monitor.start,
-        'stop': monitor.stop,
-        'status': monitor.status,
-        'check': monitor.check,
-        'test': monitor.test,
-        'help': monitor.help
-    }
+    # Start monitoring automatically
+    monitor.start()
     
-    while True:
-        try:
-            user_input = input("\n>>> ").strip().lower()
+    print("\n✅ Monitor is now running 24/7!")
+    print("📊 It will check stock every 5 minutes")
+    print("🚨 You will receive Telegram alerts for significant increases")
+    print("💤 Running in background...")
+    
+    try:
+        # Keep the main thread alive forever
+        while True:
+            time.sleep(60)  # Sleep forever, monitoring runs in background thread
             
-            if user_input == 'exit':
-                print("👋 Goodbye!")
-                if monitor.monitoring:
-                    monitor.stop()
-                break
-            
-            elif user_input in commands:
-                commands[user_input]()
-            
-            else:
-                print("❌ Unknown command. Type 'help' for available commands.")
-                
-        except KeyboardInterrupt:
-            print("\n🛑 Stopping monitor...")
-            if monitor.monitoring:
-                monitor.stop()
-            break
-        except Exception as e:
-            print(f"❌ Error: {e}")
+    except KeyboardInterrupt:
+        print("\n🛑 Monitor stopped by user")
+        monitor.monitoring = False
 
 if __name__ == "__main__":
     main()
