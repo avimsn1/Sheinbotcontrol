@@ -4,8 +4,7 @@ import sqlite3
 import time
 import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-import asyncio
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 import json
 from datetime import datetime
 import os
@@ -15,8 +14,8 @@ import re
 # Configuration
 def get_config():
     return {
-        'telegram_bot_token': os.getenv('8413664821:AAHjBwysQWk3GFdJV3Bvk3Jp1vhDLpoymI8'),
-        'telegram_chat_id': os.getenv('1366899854'),
+        'telegram_bot_token': os.getenv('TELEGRAM_BOT_TOKEN', '8413664821:AAHjBwysQWk3GFdJV3Bvk3Jp1vhDLpoymI8'),
+        'telegram_chat_id': os.getenv('TELEGRAM_CHAT_ID', '1366899854'),
         'api_url': 'https://www.sheinindia.in/c/sverse-5939-37961',
         'check_interval_minutes': 5,
         'min_stock_threshold': 10,
@@ -34,7 +33,7 @@ logger = logging.getLogger(__name__)
 class SheinStockMonitorBot:
     def __init__(self, config):
         self.config = config
-        self.application = None
+        self.updater = None
         self.monitoring = False
         self.monitor_thread = None
         self.setup_database()
@@ -139,10 +138,10 @@ class SheinStockMonitorBot:
                       (current_stock, change))
         self.conn.commit()
     
-    async def send_telegram_message(self, message, parse_mode='HTML'):
+    def send_telegram_message(self, message, parse_mode='HTML'):
         """Send message via Telegram"""
         try:
-            await self.application.bot.send_message(
+            self.updater.bot.send_message(
                 chat_id=self.config['telegram_chat_id'],
                 text=message,
                 parse_mode=parse_mode
@@ -191,12 +190,8 @@ class SheinStockMonitorBot:
 ⚡ Quick! New SVerse items might be available!
             """.strip()
             
-            # Use asyncio to send message safely
             try:
-                asyncio.run_coroutine_threadsafe(
-                    self.send_telegram_message(message),
-                    self.application.loop
-                )
+                self.send_telegram_message(message)
                 print("✅ Alert sent to Telegram!")
             except Exception as e:
                 print(f"❌ Error sending alert: {e}")
@@ -217,10 +212,10 @@ class SheinStockMonitorBot:
         self.monitor_thread.daemon = True
         self.monitor_thread.start()
     
-    async def start_monitoring(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def start_monitoring(self, update: Update, context: CallbackContext):
         """Start monitoring command"""
         if self.monitoring:
-            await update.message.reply_text("🔄 Monitoring is already running!")
+            update.message.reply_text("🔄 Monitoring is already running!")
             return
         
         self.monitoring = True
@@ -243,20 +238,20 @@ class SheinStockMonitorBot:
 Use /stop to stop monitoring.
         """.strip()
         
-        await update.message.reply_text(message)
+        update.message.reply_text(message)
         print("✅ Monitoring started via /start command")
     
-    async def stop_monitoring(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def stop_monitoring(self, update: Update, context: CallbackContext):
         """Stop monitoring command"""
         if not self.monitoring:
-            await update.message.reply_text("❌ Monitoring is not running!")
+            update.message.reply_text("❌ Monitoring is not running!")
             return
         
         self.monitoring = False
-        await update.message.reply_text("🛑 Monitoring stopped!")
+        update.message.reply_text("🛑 Monitoring stopped!")
         print("🛑 Monitoring stopped via /stop command")
     
-    async def check_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def check_status(self, update: Update, context: CallbackContext):
         """Check status command"""
         current_stock = self.get_shein_stock_count()
         previous_stock = self.get_previous_stock()
@@ -275,12 +270,12 @@ Use /stop to stop monitoring.
 {'Use /start to begin monitoring' if not self.monitoring else 'Use /stop to stop monitoring'}
         """.strip()
         
-        await update.message.reply_text(message)
+        update.message.reply_text(message)
         print(f"📊 Status checked - Monitoring: {self.monitoring}")
     
-    async def force_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def force_check(self, update: Update, context: CallbackContext):
         """Force immediate check"""
-        await update.message.reply_text("🔍 Checking stock now...")
+        update.message.reply_text("🔍 Checking stock now...")
         
         current_stock = self.get_shein_stock_count()
         previous_stock = self.get_previous_stock()
@@ -296,13 +291,13 @@ Use /stop to stop monitoring.
 ⏰ Checked: {datetime.now().strftime('%H:%M:%S')}
         """.strip()
         
-        await update.message.reply_text(message)
+        update.message.reply_text(message)
         
         # Save this check
         self.save_current_stock(current_stock, change)
         print("🔍 Manual stock check completed")
     
-    async def show_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def show_help(self, update: Update, context: CallbackContext):
         """Show help"""
         help_text = """
 🤖 **SHEIN STOCK MONITOR BOT**
@@ -318,9 +313,9 @@ Use /stop to stop monitoring.
 Send /start to begin monitoring!
         """.strip()
         
-        await update.message.reply_text(help_text)
+        update.message.reply_text(help_text)
     
-    async def start_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def start_bot(self, update: Update, context: CallbackContext):
         """Welcome message"""
         welcome = """
 🎉 **Welcome to Shein Stock Monitor!**
@@ -337,35 +332,38 @@ I monitor SVerse collection on Shein and alert you when stock increases signific
 Send /start to begin!
         """.strip()
         
-        await update.message.reply_text(welcome)
+        update.message.reply_text(welcome)
     
     def setup_handlers(self):
         """Setup bot command handlers"""
-        self.application.add_handler(CommandHandler("start", self.start_monitoring))
-        self.application.add_handler(CommandHandler("stop", self.stop_monitoring))
-        self.application.add_handler(CommandHandler("status", self.check_status))
-        self.application.add_handler(CommandHandler("check", self.force_check))
-        self.application.add_handler(CommandHandler("help", self.show_help))
+        dp = self.updater.dispatcher
+        
+        dp.add_handler(CommandHandler("start", self.start_monitoring))
+        dp.add_handler(CommandHandler("stop", self.stop_monitoring))
+        dp.add_handler(CommandHandler("status", self.check_status))
+        dp.add_handler(CommandHandler("check", self.force_check))
+        dp.add_handler(CommandHandler("help", self.show_help))
         
         # Handle other messages
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.show_help))
+        dp.add_handler(MessageHandler(Filters.text & ~Filters.command, self.show_help))
     
-    async def run_bot(self):
+    def run_bot(self):
         """Run the bot"""
-        self.application = Application.builder().token(self.config['telegram_bot_token']).build()
+        self.updater = Updater(token=self.config['telegram_bot_token'], use_context=True)
         self.setup_handlers()
         
         # Send startup notification
-        await self.send_telegram_message("🤖 Shein Stock Monitor is now ONLINE and ready!")
+        self.send_telegram_message("🤖 Shein Stock Monitor is now ONLINE and ready!")
         
         print("🤖 Bot started successfully - ready for commands!")
         print("📱 Open Telegram and send /start to begin monitoring")
         
         # Start polling - this will keep the bot running
-        await self.application.run_polling()
+        self.updater.start_polling()
+        self.updater.idle()
 
-async def main():
-    """Main async function"""
+def main():
+    """Main function"""
     print("🚀 Starting Shein Stock Monitor Cloud Bot...")
     print("💡 This bot runs 24/7 in the cloud!")
     print("📱 Control it entirely via Telegram commands")
@@ -375,11 +373,9 @@ async def main():
     
     try:
         # Run the bot (this will keep running)
-        await monitor_bot.run_bot()
+        monitor_bot.run_bot()
     except Exception as e:
         print(f"❌ Bot error: {e}")
 
 if __name__ == "__main__":
-    # Proper asyncio execution
-
-    asyncio.run(main())
+    main()
