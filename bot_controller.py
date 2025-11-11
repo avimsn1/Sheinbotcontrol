@@ -15,8 +15,8 @@ import re
 # Configuration
 def get_config():
     return {
-        'telegram_bot_token': os.getenv('TELEGRAM_BOT_TOKEN', '8413664821:AAHjBwysQWk3GFdJV3Bvk3Jp1vhDLpoymI8'),
-        'telegram_chat_id': os.getenv('TELEGRAM_CHAT_ID', '1366899854'),
+        'telegram_bot_token': os.getenv('8413664821:AAHjBwysQWk3GFdJV3Bvk3Jp1vhDLpoymI8'),
+        'telegram_chat_id': os.getenv('1366899854'),
         'api_url': 'https://www.sheinindia.in/c/sverse-5939-37961',
         'check_interval_minutes': 5,
         'min_stock_threshold': 10,
@@ -381,4 +381,5 @@ async def main():
 
 if __name__ == "__main__":
     # Proper asyncio execution
+
     asyncio.run(main())
