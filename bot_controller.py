@@ -18,7 +18,7 @@ CONFIG = {
     'check_interval_minutes': 5,
     'min_stock_threshold': 10,
     'database_path': '/tmp/shein_monitor.db',
-    'min_increase_threshold': 50
+    'min_increase_threshold': 10
 }
 
 # Set up logging
@@ -288,3 +288,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
