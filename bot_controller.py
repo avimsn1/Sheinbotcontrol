@@ -543,11 +543,29 @@ Use the buttons below to control the monitor!
             print(f"❌ Error handling Telegram command: {e}")
             await self.send_telegram_message("❌ Error processing command. Please try again.", chat_id)
 
-def start_simple_telegram_bot(monitor):
-    """Start a simple Telegram bot using webhook polling"""
+def cleanup_webhook(token):
+    """Clean up any existing webhook to avoid conflicts"""
+    try:
+        url = f"https://api.telegram.org/bot{token}/deleteWebhook"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            print("✅ Webhook cleanup completed")
+        else:
+            print(f"⚠️ Webhook cleanup returned status: {response.status_code}")
+    except Exception as e:
+        print(f"⚠️ Webhook cleanup error: {e}")
+
+def start_robust_telegram_bot(monitor):
+    """Start a robust Telegram bot with conflict resolution"""
     def poll_telegram_updates():
-        print("🤖 Starting simple Telegram bot...")
+        print("🤖 Starting robust Telegram bot...")
         last_update_id = 0
+        error_count = 0
+        max_errors = 5
+        
+        # Clean up any existing webhooks first
+        cleanup_webhook(CONFIG['telegram_bot_token'])
+        time.sleep(2)  # Wait for cleanup to propagate
         
         while True:
             try:
@@ -555,11 +573,25 @@ def start_simple_telegram_bot(monitor):
                 url = f"https://api.telegram.org/bot{CONFIG['telegram_bot_token']}/getUpdates"
                 params = {
                     'offset': last_update_id + 1,
-                    'timeout': 30
+                    'timeout': 30,
+                    'allowed_updates': ['message']
                 }
                 
                 response = requests.get(url, params=params, timeout=35)
+                
+                if response.status_code == 409:
+                    print("🔄 Conflict detected - another bot instance might be running")
+                    print("🔄 Attempting to resolve conflict...")
+                    cleanup_webhook(CONFIG['telegram_bot_token'])
+                    time.sleep(5)
+                    error_count += 1
+                    if error_count >= max_errors:
+                        print("❌ Too many conflicts, stopping Telegram bot")
+                        break
+                    continue
+                
                 response.raise_for_status()
+                error_count = 0  # Reset error count on success
                 
                 data = response.json()
                 if data.get('ok') and data.get('result'):
@@ -575,18 +607,35 @@ def start_simple_telegram_bot(monitor):
                             
                             # Handle the command
                             asyncio.run(monitor.handle_telegram_command(text, chat_id))
+                else:
+                    # No new updates, sleep briefly to avoid hitting rate limits
+                    time.sleep(1)
                 
             except requests.RequestException as e:
                 print(f"⚠️ Telegram polling error: {e}")
+                error_count += 1
+                if error_count >= max_errors:
+                    print("❌ Too many errors, stopping Telegram bot")
+                    break
                 time.sleep(5)
             except Exception as e:
                 print(f"❌ Telegram bot error: {e}")
+                error_count += 1
+                if error_count >= max_errors:
+                    print("❌ Too many errors, stopping Telegram bot")
+                    break
                 time.sleep(5)
+        
+        if error_count >= max_errors:
+            print("🔧 Restarting Telegram bot in 30 seconds...")
+            time.sleep(30)
+            # Restart the bot
+            start_robust_telegram_bot(monitor)
     
     bot_thread = threading.Thread(target=poll_telegram_updates)
     bot_thread.daemon = True
     bot_thread.start()
-    print("✅ Simple Telegram bot started!")
+    print("✅ Robust Telegram bot started!")
     return True
 
 def main():
@@ -597,8 +646,8 @@ def main():
     
     monitor = SheinStockMonitor(CONFIG)
     
-    # Start simple Telegram bot
-    telegram_started = start_simple_telegram_bot(monitor)
+    # Start robust Telegram bot
+    telegram_started = start_robust_telegram_bot(monitor)
     
     # Start monitoring immediately
     print("🤖 Starting automatic monitoring...")
