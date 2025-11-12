@@ -13,13 +13,13 @@ import asyncio
 # Configuration
 CONFIG = {
     'telegram_bot_token': '8413664821:AAHjBwysQWk3GFdJV3Bvk3Jp1vhDLpoymI8',
-    'telegram_chat_id': '1366899854',  # This will be your default/admin chat
-    'admin_user_ids': ['1366899854'],  # Add your Telegram user IDs here
+    'telegram_chat_id': '1366899854',
+    'admin_user_ids': ['1366899854'],
     'api_url': 'https://www.sheinindia.in/c/sverse-5939-37961',
-    'check_interval_minutes': 0.1,
+    'check_interval_minutes': 0.1667,
     'min_stock_threshold': 10,
     'database_path': '/tmp/shein_monitor.db',
-    'min_increase_threshold': 1
+    'min_increase_threshold': 10
 }
 
 # Set up logging
@@ -34,6 +34,7 @@ class SheinStockMonitor:
         self.config = config
         self.monitoring = False
         self.monitor_thread = None
+        self.telegram_running = False
         self.setup_database()
         print("🤖 Shein Monitor initialized")
     
@@ -42,7 +43,6 @@ class SheinStockMonitor:
         self.conn = sqlite3.connect(self.config['database_path'], check_same_thread=False)
         cursor = self.conn.cursor()
         
-        # Stock history table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS stock_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,7 +55,6 @@ class SheinStockMonitor:
             )
         ''')
         
-        # Users table to track all bot users
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS bot_users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,15 +106,11 @@ class SheinStockMonitor:
         return str(user_id) in self.config['admin_user_ids']
     
     def extract_gender_counts(self, data):
-        """
-        Extract men and women counts from the JSON data
-        Returns: (men_count, women_count)
-        """
+        """Extract men and women counts from the JSON data"""
         men_count = 0
         women_count = 0
         
         try:
-            # Method 1: Look for genderfilter objects directly in the data
             if 'genderfilter-Women' in data:
                 women_data = data.get('genderfilter-Women', {})
                 women_count = women_data.get('count', 0)
@@ -126,41 +121,34 @@ class SheinStockMonitor:
                 men_count = men_data.get('count', 0)
                 print(f"✅ Found men count in genderfilter-Men: {men_count}")
             
-            # Method 2: Search through all keys for genderfilter patterns
             if men_count == 0 and women_count == 0:
                 for key, value in data.items():
                     if isinstance(value, dict):
-                        # Check for women count
                         if 'genderfilter-Women' in key or ('name' in value and value.get('name') == 'Women'):
                             women_count = value.get('count', 0)
                             if women_count > 0:
                                 print(f"✅ Found women count in {key}: {women_count}")
                         
-                        # Check for men count
                         if 'genderfilter-Men' in key or ('name' in value and value.get('name') == 'Men'):
                             men_count = value.get('count', 0)
                             if men_count > 0:
                                 print(f"✅ Found men count in {key}: {men_count}")
             
-            # Method 3: Deep search in the entire data structure
             if men_count == 0 and women_count == 0:
                 data_str = json.dumps(data)
                 
-                # Look for women count using regex - specific pattern from the response
                 women_pattern = r'"genderfilter-Women":\s*\{[^}]*"count":\s*(\d+)'
                 women_match = re.search(women_pattern, data_str)
                 if women_match:
                     women_count = int(women_match.group(1))
                     print(f"✅ Found women count via regex: {women_count}")
                 
-                # Look for men count using regex - specific pattern from the response
                 men_pattern = r'"genderfilter-Men":\s*\{[^}]*"count":\s*(\d+)'
                 men_match = re.search(men_pattern, data_str)
                 if men_match:
                     men_count = int(men_match.group(1))
                     print(f"✅ Found men count via regex: {men_count}")
                 
-                # Alternative regex patterns
                 if women_count == 0:
                     women_pattern2 = r'"name":"Women"[^}]*"count":\s*(\d+)'
                     women_match2 = re.search(women_pattern2, data_str)
@@ -181,10 +169,7 @@ class SheinStockMonitor:
         return men_count, women_count
     
     def get_shein_stock_count(self):
-        """
-        Get total stock count and gender-specific counts from Shein API
-        Returns: (total_stock, men_count, women_count)
-        """
+        """Get total stock count and gender-specific counts from Shein API"""
         try:
             headers = {
                 'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -210,42 +195,30 @@ class SheinStockMonitor:
             )
             response.raise_for_status()
             
-            # Parse the HTML response to find the JSON data
             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Look for script tags containing product data
             scripts = soup.find_all('script')
             for script in scripts:
                 script_content = script.string
                 if script_content and 'facets' in script_content and 'totalResults' in script_content:
                     try:
-                        # Extract JSON data from script tag
                         if 'window.goodsDetailData' in script_content:
                             json_str = script_content.split('window.goodsDetailData = ')[1].split(';')[0]
                             data = json.loads(json_str)
                             total_stock = data.get('facets', {}).get('totalResults', 0)
-                            
-                            # Extract men and women counts
                             men_count, women_count = self.extract_gender_counts(data)
-                            
                             print(f"✅ Found total stock: {total_stock}, Men: {men_count}, Women: {women_count}")
                             return total_stock, men_count, women_count
                     except (json.JSONDecodeError, IndexError, KeyError) as e:
                         print(f"⚠️ Error parsing script data: {e}")
                         continue
             
-            # Alternative: Search for the pattern in the entire response
             response_text = response.text
             if 'facets' in response_text and 'totalResults' in response_text:
-                # Extract total stock
                 pattern = r'"facets":\s*\{[^}]*"totalResults":\s*(\d+)'
                 match = re.search(pattern, response_text)
                 if match:
                     total_stock = int(match.group(1))
-                    
-                    # Extract gender counts from response text
                     men_count, women_count = self.extract_gender_counts_from_text(response_text)
-                    
                     print(f"✅ Found total stock via regex: {total_stock}, Men: {men_count}, Women: {women_count}")
                     return total_stock, men_count, women_count
             
@@ -260,14 +233,11 @@ class SheinStockMonitor:
             return 0, 0, 0
     
     def extract_gender_counts_from_text(self, response_text):
-        """
-        Extract men and women counts from response text using regex
-        """
+        """Extract men and women counts from response text using regex"""
         men_count = 0
         women_count = 0
         
         try:
-            # Primary method: Look for the exact genderfilter objects
             women_pattern = r'"genderfilter-Women":\s*\{[^}]*"count":\s*(\d+)'
             women_match = re.search(women_pattern, response_text)
             if women_match:
@@ -280,7 +250,6 @@ class SheinStockMonitor:
                 men_count = int(men_match.group(1))
                 print(f"✅ Found men count via text regex: {men_count}")
             
-            # Secondary method: Look for name and count patterns
             if women_count == 0:
                 women_pattern2 = r'"name":"Women"[^}]*"count":\s*(\d+)'
                 women_match2 = re.search(women_pattern2, response_text)
@@ -340,7 +309,6 @@ class SheinStockMonitor:
         """Send message with custom keyboard"""
         try:
             if is_admin:
-                # Admin keyboard with all commands
                 keyboard = {
                     'keyboard': [
                         ['/start_monitor', '/stop_monitor'],
@@ -351,7 +319,6 @@ class SheinStockMonitor:
                     'one_time_keyboard': False
                 }
             else:
-                # Regular user keyboard without admin commands
                 keyboard = {
                     'keyboard': [
                         ['/check_now', '/status']
@@ -389,7 +356,6 @@ class SheinStockMonitor:
                 success = await self.send_telegram_message(message, chat_id)
                 if success:
                     success_count += 1
-                # Small delay to avoid hitting rate limits
                 await asyncio.sleep(0.1)
             except Exception as e:
                 print(f"❌ Error broadcasting to user {user_id}: {e}")
@@ -401,7 +367,6 @@ class SheinStockMonitor:
         """Check if stock has significantly increased"""
         print("🔍 Checking Shein for stock updates...")
         
-        # Get current stock count and gender counts
         current_stock, men_count, women_count = self.get_shein_stock_count()
         if current_stock == 0:
             error_msg = "❌ Could not retrieve stock count"
@@ -410,16 +375,12 @@ class SheinStockMonitor:
                 asyncio.run(self.send_telegram_message(error_msg, chat_id))
             return
         
-        # Get previous stock count and gender counts
         previous_stock, prev_men_count, prev_women_count = self.get_previous_stock()
-        
-        # Calculate change
         stock_change = current_stock - previous_stock
         
         print(f"📊 Stock: {current_stock} (Previous: {previous_stock}, Change: {stock_change})")
         print(f"👕 Men: {men_count}, Women: {women_count}")
         
-        # If manual check, always send current status to the requesting user
         if manual_check and chat_id:
             status_message = f"""
 📊 CURRENT STOCK STATUS:
@@ -437,20 +398,15 @@ class SheinStockMonitor:
             """.strip()
             asyncio.run(self.send_telegram_message(status_message, chat_id))
         
-        # Check if significant increase for automatic alerts
         if (stock_change >= self.config['min_increase_threshold'] and 
             current_stock >= self.config['min_stock_threshold'] and
             not manual_check):
             
-            # Save with notification flag
             self.save_current_stock(current_stock, men_count, women_count, stock_change)
-            
-            # Send notifications to ALL users
             asyncio.run(self.send_stock_alert_to_all(current_stock, previous_stock, stock_change, men_count, women_count))
             print(f"✅ Sent alert for stock increase: +{stock_change}")
         
         else:
-            # Save without notification
             self.save_current_stock(current_stock, men_count, women_count, stock_change)
             if not manual_check:
                 print("✅ No significant stock change detected")
@@ -477,10 +433,8 @@ class SheinStockMonitor:
 ⚡ Quick! New SVerse items might be available!
         """.strip()
         
-        # Broadcast to all users
         success_count, total_users = await self.broadcast_message(message)
         
-        # Also send admin report
         admin_report = f"""
 📊 STOCK ALERT REPORT
 
@@ -490,7 +444,6 @@ class SheinStockMonitor:
 🕒 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """.strip()
         
-        # Send report to admin
         await self.send_telegram_message(admin_report, self.config['telegram_chat_id'])
     
     async def send_test_notification(self, chat_id=None):
@@ -510,10 +463,8 @@ class SheinStockMonitor:
         """.strip()
         
         if chat_id:
-            # Send to specific user
             await self.send_telegram_message(test_message, chat_id)
         else:
-            # Send to all users
             await self.broadcast_message(test_message)
         
         print("✅ Test notification sent successfully!")
@@ -539,13 +490,8 @@ class SheinStockMonitor:
         
         self.monitoring = True
         self.start_monitoring_loop()
-        
-        # Send test notification to all users
         asyncio.run(self.send_test_notification())
-        
-        # Initial check
         self.check_stock()
-        
         print("✅ Monitor started successfully! Running 24/7...")
     
     def stop_monitoring(self):
@@ -557,13 +503,11 @@ class SheinStockMonitor:
         self.monitoring = False
         print("🛑 Monitoring stopped!")
 
-    # Simple command handlers using webhook approach
     async def handle_telegram_command(self, command, chat_id, user_id):
         """Handle Telegram commands using direct API calls"""
         try:
             is_admin_user = self.is_admin(user_id)
             
-            # Add user to database when they interact with the bot
             user_info = await self.get_user_info(user_id)
             if user_info:
                 self.add_user(
@@ -651,7 +595,6 @@ Use the buttons below to interact with the monitor!
                 status = "🟢 RUNNING" if self.monitoring else "🔴 STOPPED"
                 user_count = self.get_user_count()
                 
-                # Get latest stock data
                 cursor = self.conn.cursor()
                 cursor.execute('SELECT total_stock, men_count, women_count, timestamp FROM stock_history ORDER BY timestamp DESC LIMIT 1')
                 result = cursor.fetchone()
@@ -718,7 +661,7 @@ You have full control over the monitor.
                 user_count = len(users)
                 
                 if user_count > 0:
-                    user_list = "\n".join([f"• {user[2]} (@{user[1]}) - {user[0]}" for user in users[:10]])  # Show first 10 users
+                    user_list = "\n".join([f"• {user[2]} (@{user[1]}) - {user[0]}" for user in users[:10]])
                     if user_count > 10:
                         user_list += f"\n• ... and {user_count - 10} more users"
                     
@@ -758,29 +701,72 @@ You have full control over the monitor.
             print(f"⚠️ Error getting user info: {e}")
         return None
 
-def cleanup_webhook(token):
-    """Clean up any existing webhook to avoid conflicts"""
+def robust_cleanup_webhook(token):
+    """Robust webhook cleanup with multiple attempts"""
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            print(f"🔄 Attempting webhook cleanup (attempt {attempt + 1}/{max_attempts})...")
+            url = f"https://api.telegram.org/bot{token}/deleteWebhook"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('ok'):
+                    print("✅ Webhook cleanup completed successfully")
+                    return True
+                else:
+                    print(f"⚠️ Webhook cleanup API error: {result.get('description', 'Unknown error')}")
+            else:
+                print(f"⚠️ Webhook cleanup HTTP error: {response.status_code}")
+                
+        except Exception as e:
+            print(f"⚠️ Webhook cleanup error (attempt {attempt + 1}): {e}")
+        
+        if attempt < max_attempts - 1:
+            time.sleep(2)
+    
+    print("❌ Webhook cleanup failed after multiple attempts")
+    return False
+
+def check_bot_health(token):
+    """Check if bot is healthy and ready"""
     try:
-        url = f"https://api.telegram.org/bot{token}/deleteWebhook"
+        url = f"https://api.telegram.org/bot{token}/getMe"
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
-            print("✅ Webhook cleanup completed")
-        else:
-            print(f"⚠️ Webhook cleanup returned status: {response.status_code}")
+            data = response.json()
+            if data.get('ok'):
+                bot_info = data.get('result', {})
+                print(f"✅ Bot is healthy: @{bot_info.get('username', 'Unknown')}")
+                return True
+        print(f"❌ Bot health check failed: {response.status_code}")
+        return False
     except Exception as e:
-        print(f"⚠️ Webhook cleanup error: {e}")
+        print(f"❌ Bot health check error: {e}")
+        return False
 
 def start_robust_telegram_bot(monitor):
-    """Start a robust Telegram bot with conflict resolution"""
+    """Start a robust Telegram bot with improved conflict resolution"""
     def poll_telegram_updates():
         print("🤖 Starting robust Telegram bot...")
+        
+        # Step 1: Health check
+        if not check_bot_health(CONFIG['telegram_bot_token']):
+            print("❌ Bot health check failed, cannot start Telegram bot")
+            return False
+        
+        # Step 2: Robust webhook cleanup
+        if not robust_cleanup_webhook(CONFIG['telegram_bot_token']):
+            print("⚠️ Continuing despite webhook cleanup issues...")
+        
+        time.sleep(3)  # Wait for cleanup to propagate
+        
         last_update_id = 0
         error_count = 0
-        max_errors = 5
-        
-        # Clean up any existing webhooks first
-        cleanup_webhook(CONFIG['telegram_bot_token'])
-        time.sleep(2)  # Wait for cleanup to propagate
+        max_errors = 10
+        conflict_count = 0
+        max_conflicts = 3
         
         while True:
             try:
@@ -795,16 +781,20 @@ def start_robust_telegram_bot(monitor):
                 response = requests.get(url, params=params, timeout=35)
                 
                 if response.status_code == 409:
-                    print("🔄 Conflict detected - another bot instance might be running")
-                    print("🔄 Attempting to resolve conflict...")
-                    cleanup_webhook(CONFIG['telegram_bot_token'])
-                    time.sleep(5)
-                    error_count += 1
-                    if error_count >= max_errors:
+                    conflict_count += 1
+                    print(f"🔄 Conflict detected ({conflict_count}/{max_conflicts}) - cleaning up...")
+                    
+                    if conflict_count >= max_conflicts:
                         print("❌ Too many conflicts, stopping Telegram bot")
                         break
+                    
+                    # Clean up and retry
+                    robust_cleanup_webhook(CONFIG['telegram_bot_token'])
+                    time.sleep(5)
                     continue
                 
+                # Reset conflict count on successful request
+                conflict_count = 0
                 response.raise_for_status()
                 error_count = 0  # Reset error count on success
                 
@@ -820,23 +810,24 @@ def start_robust_telegram_bot(monitor):
                             text = message['text']
                             
                             print(f"📱 Received command: {text} from user {user_id}")
-                            
-                            # Handle the command
                             asyncio.run(monitor.handle_telegram_command(text, chat_id, user_id))
                 else:
-                    # No new updates, sleep briefly to avoid hitting rate limits
+                    # No new updates, sleep briefly
                     time.sleep(1)
                 
             except requests.RequestException as e:
-                print(f"⚠️ Telegram polling error: {e}")
                 error_count += 1
+                print(f"⚠️ Telegram polling error ({error_count}/{max_errors}): {e}")
+                
                 if error_count >= max_errors:
                     print("❌ Too many errors, stopping Telegram bot")
                     break
                 time.sleep(5)
+                
             except Exception as e:
-                print(f"❌ Telegram bot error: {e}")
                 error_count += 1
+                print(f"❌ Telegram bot error ({error_count}/{max_errors}): {e}")
+                
                 if error_count >= max_errors:
                     print("❌ Too many errors, stopping Telegram bot")
                     break
@@ -846,7 +837,9 @@ def start_robust_telegram_bot(monitor):
             print("🔧 Restarting Telegram bot in 30 seconds...")
             time.sleep(30)
             # Restart the bot
-            start_robust_telegram_bot(monitor)
+            return start_robust_telegram_bot(monitor)
+        
+        return True
     
     bot_thread = threading.Thread(target=poll_telegram_updates)
     bot_thread.daemon = True
