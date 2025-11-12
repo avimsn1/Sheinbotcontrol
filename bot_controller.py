@@ -15,7 +15,7 @@ CONFIG = {
     'telegram_bot_token': '8413664821:AAHjBwysQWk3GFdJV3Bvk3Jp1vhDLpoymI8',
     'telegram_chat_id': '1366899854',
     'api_url': 'https://www.sheinindia.in/c/sverse-5939-37961',
-    'check_interval_minutes': 2,
+    'check_interval_minutes': 0.1667,
     'min_stock_threshold': 10,
     'database_path': '/tmp/shein_monitor.db',
     'min_increase_threshold': 10
@@ -290,3 +290,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
