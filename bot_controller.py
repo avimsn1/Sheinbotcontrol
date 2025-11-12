@@ -14,6 +14,7 @@ import asyncio
 CONFIG = {
     'telegram_bot_token': '8413664821:AAHjBwysQWk3GFdJV3Bvk3Jp1vhDLpoymI8',
     'telegram_chat_id': '1366899854',
+    'admin_user_ids': ['1366899854'],  # Add your Telegram user IDs here
     'api_url': 'https://www.sheinindia.in/c/sverse-5939-37961',
     'check_interval_minutes': 0.1667,
     'min_stock_threshold': 10,
@@ -53,6 +54,10 @@ class SheinStockMonitor:
         ''')
         self.conn.commit()
         print("✅ Database setup completed")
+    
+    def is_admin(self, user_id):
+        """Check if user is admin"""
+        return str(user_id) in self.config['admin_user_ids']
     
     def extract_gender_counts(self, data):
         """
@@ -285,18 +290,29 @@ class SheinStockMonitor:
             print(f"❌ Error sending Telegram message: {e}")
             return False
     
-    async def send_telegram_message_with_keyboard(self, message, chat_id):
+    async def send_telegram_message_with_keyboard(self, message, chat_id, is_admin=False):
         """Send message with custom keyboard"""
         try:
-            # Simple keyboard using inline markup
-            keyboard = {
-                'keyboard': [
-                    ['/start_monitor', '/stop_monitor'],
-                    ['/check_now', '/status']
-                ],
-                'resize_keyboard': True,
-                'one_time_keyboard': False
-            }
+            if is_admin:
+                # Admin keyboard with all commands
+                keyboard = {
+                    'keyboard': [
+                        ['/start_monitor', '/stop_monitor'],
+                        ['/check_now', '/status'],
+                        ['/admin', '/users']
+                    ],
+                    'resize_keyboard': True,
+                    'one_time_keyboard': False
+                }
+            else:
+                # Regular user keyboard without admin commands
+                keyboard = {
+                    'keyboard': [
+                        ['/check_now', '/status']
+                    ],
+                    'resize_keyboard': True,
+                    'one_time_keyboard': False
+                }
             
             url = f"https://api.telegram.org/bot{self.config['telegram_bot_token']}/sendMessage"
             payload = {
@@ -455,42 +471,67 @@ class SheinStockMonitor:
         print("🛑 Monitoring stopped!")
 
     # Simple command handlers using webhook approach
-    async def handle_telegram_command(self, command, chat_id):
+    async def handle_telegram_command(self, command, chat_id, user_id):
         """Handle Telegram commands using direct API calls"""
         try:
+            is_admin_user = self.is_admin(user_id)
+            
             if command == '/start' or command == '/help':
-                welcome_message = """
+                if is_admin_user:
+                    welcome_message = """
+🤖 Welcome to Shein Stock Monitor - ADMIN MODE
+
+You have administrator privileges.
+
+Available Commands:
+• /start_monitor - Start automatic monitoring (Admin only)
+• /stop_monitor - Stop monitoring (Admin only)
+• /check_now - Check stock immediately
+• /status - Current monitor status
+• /admin - Admin information
+
+Use the buttons below to control the monitor!
+                    """.strip()
+                else:
+                    welcome_message = """
 🤖 Welcome to Shein Stock Monitor!
 
 I will monitor SVerse stock and alert you when new items are added.
 
 Available Commands:
-• /start_monitor - Start automatic monitoring
-• /stop_monitor - Stop monitoring
 • /check_now - Check stock immediately
 • /status - Current monitor status
 
-Use the buttons below to control the monitor!
-                """.strip()
-                await self.send_telegram_message_with_keyboard(welcome_message, chat_id)
+Use the buttons below to interact with the monitor!
+                    """.strip()
+                
+                await self.send_telegram_message_with_keyboard(welcome_message, chat_id, is_admin_user)
             
             elif command == '/start_monitor':
+                if not is_admin_user:
+                    await self.send_telegram_message("❌ Access Denied! Only administrators can start monitoring.", chat_id)
+                    return
+                
                 if self.monitoring:
                     await self.send_telegram_message("🔄 Monitoring is already running!", chat_id)
                 else:
                     self.monitoring = True
                     self.start_monitoring_loop()
-                    await self.send_telegram_message_with_keyboard("✅ Shein Stock Monitor STARTED! Bot is now actively monitoring SVerse stock.", chat_id)
+                    await self.send_telegram_message_with_keyboard("✅ Shein Stock Monitor STARTED! Bot is now actively monitoring SVerse stock.", chat_id, is_admin_user)
                     await self.send_test_notification(chat_id)
-                    print("✅ Monitor started via command!")
+                    print("✅ Monitor started via admin command!")
             
             elif command == '/stop_monitor':
+                if not is_admin_user:
+                    await self.send_telegram_message("❌ Access Denied! Only administrators can stop monitoring.", chat_id)
+                    return
+                
                 if not self.monitoring:
                     await self.send_telegram_message("❌ Monitoring is not running!", chat_id)
                 else:
                     self.monitoring = False
                     await self.send_telegram_message("🛑 Monitoring stopped!", chat_id)
-                    print("🛑 Monitoring stopped via command!")
+                    print("🛑 Monitoring stopped via admin command!")
             
             elif command == '/check_now':
                 await self.send_telegram_message("🔍 Checking stock immediately...", chat_id)
@@ -535,6 +576,23 @@ Use the buttons below to control the monitor!
                     """.strip()
                 
                 await self.send_telegram_message(status_message, chat_id)
+            
+            elif command == '/admin':
+                if not is_admin_user:
+                    await self.send_telegram_message("❌ Access Denied! Admin command only.", chat_id)
+                    return
+                
+                admin_info = f"""
+👑 ADMIN INFORMATION
+
+🤖 Bot Status: {'🟢 RUNNING' if self.monitoring else '🔴 STOPPED'}
+👥 Admin Users: {len(self.config['admin_user_ids']}
+📱 Your ID: {user_id}
+⏰ Server Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+You have full control over the monitor.
+                """.strip()
+                await self.send_telegram_message(admin_info, chat_id)
             
             else:
                 await self.send_telegram_message("❌ Unknown command. Use /start to see available commands.", chat_id)
@@ -601,12 +659,13 @@ def start_robust_telegram_bot(monitor):
                         if 'message' in update and 'text' in update['message']:
                             message = update['message']
                             chat_id = message['chat']['id']
+                            user_id = message['from']['id']
                             text = message['text']
                             
-                            print(f"📱 Received command: {text} from chat {chat_id}")
+                            print(f"📱 Received command: {text} from user {user_id}")
                             
                             # Handle the command
-                            asyncio.run(monitor.handle_telegram_command(text, chat_id))
+                            asyncio.run(monitor.handle_telegram_command(text, chat_id, user_id))
                 else:
                     # No new updates, sleep briefly to avoid hitting rate limits
                     time.sleep(1)
@@ -643,6 +702,7 @@ def main():
     print("🚀 Starting Shein Stock Monitor Cloud Bot...")
     print("💡 This bot runs 24/7 in the cloud!")
     print("📱 Sends Telegram alerts when stock increases")
+    print(f"👑 Admin users: {CONFIG['admin_user_ids']}")
     
     monitor = SheinStockMonitor(CONFIG)
     
