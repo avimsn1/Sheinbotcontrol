@@ -13,13 +13,13 @@ import asyncio
 # Configuration
 CONFIG = {
     'telegram_bot_token': '8413664821:AAHjBwysQWk3GFdJV3Bvk3Jp1vhDLpoymI8',
-    'telegram_chat_id': '1366899854',
+    'telegram_chat_id': '1366899854',  # This will be your default/admin chat
     'admin_user_ids': ['1366899854'],  # Add your Telegram user IDs here
     'api_url': 'https://www.sheinindia.in/c/sverse-5939-37961',
-    'check_interval_minutes': 0.1667,
+    'check_interval_minutes': 0.1,
     'min_stock_threshold': 10,
     'database_path': '/tmp/shein_monitor.db',
-    'min_increase_threshold': 10
+    'min_increase_threshold': 1
 }
 
 # Set up logging
@@ -38,9 +38,11 @@ class SheinStockMonitor:
         print("🤖 Shein Monitor initialized")
     
     def setup_database(self):
-        """Initialize SQLite database"""
+        """Initialize SQLite database with users table"""
         self.conn = sqlite3.connect(self.config['database_path'], check_same_thread=False)
         cursor = self.conn.cursor()
+        
+        # Stock history table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS stock_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,8 +54,53 @@ class SheinStockMonitor:
                 notified BOOLEAN DEFAULT FALSE
             )
         ''')
+        
+        # Users table to track all bot users
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bot_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT UNIQUE,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                chat_id TEXT,
+                is_active BOOLEAN DEFAULT TRUE,
+                joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_interaction TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         self.conn.commit()
         print("✅ Database setup completed")
+    
+    def add_user(self, user_id, username, first_name, last_name, chat_id):
+        """Add or update a user in the database"""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT OR REPLACE INTO bot_users 
+                (user_id, username, first_name, last_name, chat_id, is_active, last_interaction)
+                VALUES (?, ?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP)
+            ''', (str(user_id), username, first_name, last_name, str(chat_id)))
+            self.conn.commit()
+            print(f"✅ User added/updated: {user_id} ({username})")
+            return True
+        except Exception as e:
+            print(f"❌ Error adding user: {e}")
+            return False
+    
+    def get_all_active_users(self):
+        """Get all active users who should receive notifications"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT user_id, username, first_name, chat_id FROM bot_users WHERE is_active = TRUE')
+        users = cursor.fetchall()
+        return users
+    
+    def get_user_count(self):
+        """Get total number of active users"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM bot_users WHERE is_active = TRUE')
+        return cursor.fetchone()[0]
     
     def is_admin(self, user_id):
         """Check if user is admin"""
@@ -270,12 +317,11 @@ class SheinStockMonitor:
         self.conn.commit()
     
     async def send_telegram_message(self, message, chat_id=None):
-        """Send message via Telegram"""
+        """Send message via Telegram to specific chat_id"""
         try:
             if chat_id is None:
                 chat_id = self.config['telegram_chat_id']
             
-            # Use requests directly to avoid library compatibility issues
             url = f"https://api.telegram.org/bot{self.config['telegram_bot_token']}/sendMessage"
             payload = {
                 'chat_id': chat_id,
@@ -287,7 +333,7 @@ class SheinStockMonitor:
             response.raise_for_status()
             return True
         except Exception as e:
-            print(f"❌ Error sending Telegram message: {e}")
+            print(f"❌ Error sending Telegram message to {chat_id}: {e}")
             return False
     
     async def send_telegram_message_with_keyboard(self, message, chat_id, is_admin=False):
@@ -329,6 +375,28 @@ class SheinStockMonitor:
             print(f"❌ Error sending Telegram message with keyboard: {e}")
             return False
     
+    async def broadcast_message(self, message):
+        """Send message to ALL active users"""
+        users = self.get_all_active_users()
+        success_count = 0
+        total_users = len(users)
+        
+        print(f"📢 Broadcasting message to {total_users} users...")
+        
+        for user in users:
+            user_id, username, first_name, chat_id = user
+            try:
+                success = await self.send_telegram_message(message, chat_id)
+                if success:
+                    success_count += 1
+                # Small delay to avoid hitting rate limits
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                print(f"❌ Error broadcasting to user {user_id}: {e}")
+        
+        print(f"✅ Broadcast completed: {success_count}/{total_users} users received the message")
+        return success_count, total_users
+    
     def check_stock(self, manual_check=False, chat_id=None):
         """Check if stock has significantly increased"""
         print("🔍 Checking Shein for stock updates...")
@@ -351,7 +419,7 @@ class SheinStockMonitor:
         print(f"📊 Stock: {current_stock} (Previous: {previous_stock}, Change: {stock_change})")
         print(f"👕 Men: {men_count}, Women: {women_count}")
         
-        # If manual check, always send current status
+        # If manual check, always send current status to the requesting user
         if manual_check and chat_id:
             status_message = f"""
 📊 CURRENT STOCK STATUS:
@@ -377,8 +445,8 @@ class SheinStockMonitor:
             # Save with notification flag
             self.save_current_stock(current_stock, men_count, women_count, stock_change)
             
-            # Send notifications
-            asyncio.run(self.send_stock_alert(current_stock, previous_stock, stock_change, men_count, women_count))
+            # Send notifications to ALL users
+            asyncio.run(self.send_stock_alert_to_all(current_stock, previous_stock, stock_change, men_count, women_count))
             print(f"✅ Sent alert for stock increase: +{stock_change}")
         
         else:
@@ -387,8 +455,8 @@ class SheinStockMonitor:
             if not manual_check:
                 print("✅ No significant stock change detected")
     
-    async def send_stock_alert(self, current_stock, previous_stock, increase, men_count, women_count):
-        """Send notifications for significant stock increase"""
+    async def send_stock_alert_to_all(self, current_stock, previous_stock, increase, men_count, women_count):
+        """Send stock alert notifications to ALL users"""
         message = f"""
 🚨 SVerse STOCK ALERT! 🚨
 
@@ -409,8 +477,21 @@ class SheinStockMonitor:
 ⚡ Quick! New SVerse items might be available!
         """.strip()
         
-        # Send Telegram notification
-        await self.send_telegram_message(message)
+        # Broadcast to all users
+        success_count, total_users = await self.broadcast_message(message)
+        
+        # Also send admin report
+        admin_report = f"""
+📊 STOCK ALERT REPORT
+
+✅ Alert sent successfully!
+👥 Recipients: {success_count}/{total_users} users
+📈 Stock Increase: +{increase}
+🕒 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        """.strip()
+        
+        # Send report to admin
+        await self.send_telegram_message(admin_report, self.config['telegram_chat_id'])
     
     async def send_test_notification(self, chat_id=None):
         """Send a test notification to verify everything works"""
@@ -428,7 +509,13 @@ class SheinStockMonitor:
 🎉 Everything is set up properly!
         """.strip()
         
-        await self.send_telegram_message(test_message, chat_id)
+        if chat_id:
+            # Send to specific user
+            await self.send_telegram_message(test_message, chat_id)
+        else:
+            # Send to all users
+            await self.broadcast_message(test_message)
+        
         print("✅ Test notification sent successfully!")
     
     def start_monitoring_loop(self):
@@ -453,7 +540,7 @@ class SheinStockMonitor:
         self.monitoring = True
         self.start_monitoring_loop()
         
-        # Send test notification
+        # Send test notification to all users
         asyncio.run(self.send_test_notification())
         
         # Initial check
@@ -476,9 +563,21 @@ class SheinStockMonitor:
         try:
             is_admin_user = self.is_admin(user_id)
             
+            # Add user to database when they interact with the bot
+            user_info = await self.get_user_info(user_id)
+            if user_info:
+                self.add_user(
+                    user_id=user_id,
+                    username=user_info.get('username', ''),
+                    first_name=user_info.get('first_name', ''),
+                    last_name=user_info.get('last_name', ''),
+                    chat_id=chat_id
+                )
+            
             if command == '/start' or command == '/help':
+                user_count = self.get_user_count()
                 if is_admin_user:
-                    welcome_message = """
+                    welcome_message = f"""
 🤖 Welcome to Shein Stock Monitor - ADMIN MODE
 
 You have administrator privileges.
@@ -489,11 +588,14 @@ Available Commands:
 • /check_now - Check stock immediately
 • /status - Current monitor status
 • /admin - Admin information
+• /users - User statistics
+
+👥 Total Users: {user_count}
 
 Use the buttons below to control the monitor!
                     """.strip()
                 else:
-                    welcome_message = """
+                    welcome_message = f"""
 🤖 Welcome to Shein Stock Monitor!
 
 I will monitor SVerse stock and alert you when new items are added.
@@ -501,6 +603,8 @@ I will monitor SVerse stock and alert you when new items are added.
 Available Commands:
 • /check_now - Check stock immediately
 • /status - Current monitor status
+
+👥 Total Users: {user_count}
 
 Use the buttons below to interact with the monitor!
                     """.strip()
@@ -517,7 +621,12 @@ Use the buttons below to interact with the monitor!
                 else:
                     self.monitoring = True
                     self.start_monitoring_loop()
-                    await self.send_telegram_message_with_keyboard("✅ Shein Stock Monitor STARTED! Bot is now actively monitoring SVerse stock.", chat_id, is_admin_user)
+                    user_count = self.get_user_count()
+                    await self.send_telegram_message_with_keyboard(
+                        f"✅ Shein Stock Monitor STARTED! Bot is now actively monitoring SVerse stock for {user_count} users.", 
+                        chat_id, 
+                        is_admin_user
+                    )
                     await self.send_test_notification(chat_id)
                     print("✅ Monitor started via admin command!")
             
@@ -540,6 +649,7 @@ Use the buttons below to interact with the monitor!
             
             elif command == '/status':
                 status = "🟢 RUNNING" if self.monitoring else "🔴 STOPPED"
+                user_count = self.get_user_count()
                 
                 # Get latest stock data
                 cursor = self.conn.cursor()
@@ -552,6 +662,7 @@ Use the buttons below to interact with the monitor!
 🤖 SHEIN STOCK MONITOR STATUS
 
 📊 Monitor Status: {status}
+👥 Total Users: {user_count}
 ⏰ Last Check: {last_check}
 🔄 Check Interval: 5 minutes
 
@@ -567,6 +678,7 @@ Use the buttons below to interact with the monitor!
 🤖 SHEIN STOCK MONITOR STATUS
 
 📊 Monitor Status: {status}
+👥 Total Users: {user_count}
 ⏰ Last Check: Never
 🔄 Check Interval: 5 minutes
 
@@ -583,11 +695,13 @@ Use the buttons below to interact with the monitor!
                     return
                 
                 admin_count = len(self.config['admin_user_ids'])
+                user_count = self.get_user_count()
                 admin_info = f"""
 👑 ADMIN INFORMATION
 
 🤖 Bot Status: {'🟢 RUNNING' if self.monitoring else '🔴 STOPPED'}
-👥 Admin Users: {admin_count}
+👥 Total Users: {user_count}
+👑 Admin Users: {admin_count}
 📱 Your ID: {user_id}
 ⏰ Server Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
@@ -595,12 +709,54 @@ You have full control over the monitor.
                 """.strip()
                 await self.send_telegram_message(admin_info, chat_id)
             
+            elif command == '/users':
+                if not is_admin_user:
+                    await self.send_telegram_message("❌ Access Denied! Admin command only.", chat_id)
+                    return
+                
+                users = self.get_all_active_users()
+                user_count = len(users)
+                
+                if user_count > 0:
+                    user_list = "\n".join([f"• {user[2]} (@{user[1]}) - {user[0]}" for user in users[:10]])  # Show first 10 users
+                    if user_count > 10:
+                        user_list += f"\n• ... and {user_count - 10} more users"
+                    
+                    users_message = f"""
+👥 USER STATISTICS
+
+📊 Total Users: {user_count}
+
+👤 Recent Users:
+{user_list}
+
+⏰ Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    """.strip()
+                else:
+                    users_message = "❌ No users found in the database."
+                
+                await self.send_telegram_message(users_message, chat_id)
+            
             else:
                 await self.send_telegram_message("❌ Unknown command. Use /start to see available commands.", chat_id)
                 
         except Exception as e:
             print(f"❌ Error handling Telegram command: {e}")
             await self.send_telegram_message("❌ Error processing command. Please try again.", chat_id)
+    
+    async def get_user_info(self, user_id):
+        """Get user info from Telegram"""
+        try:
+            url = f"https://api.telegram.org/bot{self.config['telegram_bot_token']}/getChat"
+            payload = {
+                'chat_id': user_id
+            }
+            response = requests.post(url, data=payload, timeout=10)
+            if response.status_code == 200:
+                return response.json().get('result', {})
+        except Exception as e:
+            print(f"⚠️ Error getting user info: {e}")
+        return None
 
 def cleanup_webhook(token):
     """Clean up any existing webhook to avoid conflicts"""
