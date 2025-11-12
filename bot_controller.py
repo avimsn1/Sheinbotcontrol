@@ -9,9 +9,6 @@ import os
 import threading
 import re
 import asyncio
-from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram import ReplyKeyboardMarkup, KeyboardButton
 
 # Configuration
 CONFIG = {
@@ -36,7 +33,6 @@ class SheinStockMonitor:
         self.config = config
         self.monitoring = False
         self.monitor_thread = None
-        self.telegram_app = None
         self.setup_database()
         print("🤖 Shein Monitor initialized")
     
@@ -274,12 +270,16 @@ class SheinStockMonitor:
             if chat_id is None:
                 chat_id = self.config['telegram_chat_id']
             
-            bot = Bot(token=self.config['telegram_bot_token'])
-            await bot.send_message(
-                chat_id=chat_id,
-                text=message,
-                parse_mode='HTML'
-            )
+            # Use requests directly to avoid library compatibility issues
+            url = f"https://api.telegram.org/bot{self.config['telegram_bot_token']}/sendMessage"
+            payload = {
+                'chat_id': chat_id,
+                'text': message,
+                'parse_mode': 'HTML'
+            }
+            
+            response = requests.post(url, data=payload, timeout=10)
+            response.raise_for_status()
             return True
         except Exception as e:
             print(f"❌ Error sending Telegram message: {e}")
@@ -288,19 +288,26 @@ class SheinStockMonitor:
     async def send_telegram_message_with_keyboard(self, message, chat_id):
         """Send message with custom keyboard"""
         try:
-            keyboard = [
-                [KeyboardButton("/start_monitor"), KeyboardButton("/stop_monitor")],
-                [KeyboardButton("/check_now"), KeyboardButton("/status")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            # Simple keyboard using inline markup
+            keyboard = {
+                'keyboard': [
+                    ['/start_monitor', '/stop_monitor'],
+                    ['/check_now', '/status']
+                ],
+                'resize_keyboard': True,
+                'one_time_keyboard': False
+            }
             
-            bot = Bot(token=self.config['telegram_bot_token'])
-            await bot.send_message(
-                chat_id=chat_id,
-                text=message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
+            url = f"https://api.telegram.org/bot{self.config['telegram_bot_token']}/sendMessage"
+            payload = {
+                'chat_id': chat_id,
+                'text': message,
+                'parse_mode': 'HTML',
+                'reply_markup': json.dumps(keyboard)
+            }
+            
+            response = requests.post(url, data=payload, timeout=10)
+            response.raise_for_status()
             return True
         except Exception as e:
             print(f"❌ Error sending Telegram message with keyboard: {e}")
@@ -447,10 +454,12 @@ class SheinStockMonitor:
         self.monitoring = False
         print("🛑 Monitoring stopped!")
 
-    # Telegram command handlers
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Initial start command with welcome message"""
-        welcome_message = """
+    # Simple command handlers using webhook approach
+    async def handle_telegram_command(self, command, chat_id):
+        """Handle Telegram commands using direct API calls"""
+        try:
+            if command == '/start' or command == '/help':
+                welcome_message = """
 🤖 Welcome to Shein Stock Monitor!
 
 I will monitor SVerse stock and alert you when new items are added.
@@ -460,68 +469,45 @@ Available Commands:
 • /stop_monitor - Stop monitoring
 • /check_now - Check stock immediately
 • /status - Current monitor status
-• /start - Show this help message
 
 Use the buttons below to control the monitor!
-        """.strip()
-        
-        await self.send_telegram_message_with_keyboard(welcome_message, update.effective_chat.id)
-    
-    async def start_monitoring_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start the monitoring via command"""
-        if self.monitoring:
-            await update.message.reply_text("🔄 Monitoring is already running!")
-            return
-        
-        self.monitoring = True
-        self.start_monitoring_loop()
-        
-        welcome_message = """
-✅ Shein Stock Monitor STARTED!
-
-🤖 Bot is now actively monitoring SVerse stock
-📱 You will receive alerts when stock increases significantly
-⏰ Checking every 5 minutes automatically
-
-Use the buttons below to control the monitor:
-• /stop_monitor - Stop monitoring
-• /check_now - Check stock immediately
-• /status - Current status
-        """.strip()
-        
-        await self.send_telegram_message_with_keyboard(welcome_message, update.effective_chat.id)
-        await self.send_test_notification(update.effective_chat.id)
-        
-        print("✅ Monitor started via command!")
-    
-    async def stop_monitoring_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Stop monitoring via command"""
-        if not self.monitoring:
-            await update.message.reply_text("❌ Monitoring is not running!")
-            return
-        
-        self.monitoring = False
-        await update.message.reply_text("🛑 Monitoring stopped!")
-        print("🛑 Monitoring stopped via command!")
-    
-    async def check_now_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Check stock immediately via command"""
-        await update.message.reply_text("🔍 Checking stock immediately...")
-        print("🔍 Manual stock check requested")
-        self.check_stock(manual_check=True, chat_id=update.effective_chat.id)
-    
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Get current status via command"""
-        status = "🟢 RUNNING" if self.monitoring else "🔴 STOPPED"
-        
-        # Get latest stock data
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT total_stock, men_count, women_count, timestamp FROM stock_history ORDER BY timestamp DESC LIMIT 1')
-        result = cursor.fetchone()
-        
-        if result:
-            total_stock, men_count, women_count, last_check = result
-            status_message = f"""
+                """.strip()
+                await self.send_telegram_message_with_keyboard(welcome_message, chat_id)
+            
+            elif command == '/start_monitor':
+                if self.monitoring:
+                    await self.send_telegram_message("🔄 Monitoring is already running!", chat_id)
+                else:
+                    self.monitoring = True
+                    self.start_monitoring_loop()
+                    await self.send_telegram_message_with_keyboard("✅ Shein Stock Monitor STARTED! Bot is now actively monitoring SVerse stock.", chat_id)
+                    await self.send_test_notification(chat_id)
+                    print("✅ Monitor started via command!")
+            
+            elif command == '/stop_monitor':
+                if not self.monitoring:
+                    await self.send_telegram_message("❌ Monitoring is not running!", chat_id)
+                else:
+                    self.monitoring = False
+                    await self.send_telegram_message("🛑 Monitoring stopped!", chat_id)
+                    print("🛑 Monitoring stopped via command!")
+            
+            elif command == '/check_now':
+                await self.send_telegram_message("🔍 Checking stock immediately...", chat_id)
+                print("🔍 Manual stock check requested")
+                self.check_stock(manual_check=True, chat_id=chat_id)
+            
+            elif command == '/status':
+                status = "🟢 RUNNING" if self.monitoring else "🔴 STOPPED"
+                
+                # Get latest stock data
+                cursor = self.conn.cursor()
+                cursor.execute('SELECT total_stock, men_count, women_count, timestamp FROM stock_history ORDER BY timestamp DESC LIMIT 1')
+                result = cursor.fetchone()
+                
+                if result:
+                    total_stock, men_count, women_count, last_check = result
+                    status_message = f"""
 🤖 SHEIN STOCK MONITOR STATUS
 
 📊 Monitor Status: {status}
@@ -534,9 +520,9 @@ Use the buttons below to control the monitor:
    • Women: {women_count}
 
 🔗 Monitoring: {self.config['api_url']}
-            """.strip()
-        else:
-            status_message = f"""
+                    """.strip()
+                else:
+                    status_message = f"""
 🤖 SHEIN STOCK MONITOR STATUS
 
 📊 Monitor Status: {status}
@@ -546,40 +532,62 @@ Use the buttons below to control the monitor:
 📈 No stock data collected yet.
 
 🔗 Monitoring: {self.config['api_url']}
-            """.strip()
-        
-        await update.message.reply_text(status_message)
+                    """.strip()
+                
+                await self.send_telegram_message(status_message, chat_id)
+            
+            else:
+                await self.send_telegram_message("❌ Unknown command. Use /start to see available commands.", chat_id)
+                
+        except Exception as e:
+            print(f"❌ Error handling Telegram command: {e}")
+            await self.send_telegram_message("❌ Error processing command. Please try again.", chat_id)
 
-def setup_telegram_bot(monitor):
-    """Setup and run Telegram bot in a separate thread"""
-    try:
-        # Create application
-        application = Application.builder().token(CONFIG['telegram_bot_token']).build()
+def start_simple_telegram_bot(monitor):
+    """Start a simple Telegram bot using webhook polling"""
+    def poll_telegram_updates():
+        print("🤖 Starting simple Telegram bot...")
+        last_update_id = 0
         
-        # Add command handlers
-        application.add_handler(CommandHandler("start", monitor.start_command))
-        application.add_handler(CommandHandler("start_monitor", monitor.start_monitoring_command))
-        application.add_handler(CommandHandler("stop_monitor", monitor.stop_monitoring_command))
-        application.add_handler(CommandHandler("check_now", monitor.check_now_command))
-        application.add_handler(CommandHandler("status", monitor.status_command))
-        
-        print("✅ Telegram bot setup completed")
-        
-        # Start polling in a separate thread
-        def start_polling():
-            print("🤖 Starting Telegram bot polling...")
-            application.run_polling()
-        
-        bot_thread = threading.Thread(target=start_polling)
-        bot_thread.daemon = True
-        bot_thread.start()
-        print("✅ Telegram bot started in background")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error setting up Telegram bot: {e}")
-        return False
+        while True:
+            try:
+                # Get updates from Telegram
+                url = f"https://api.telegram.org/bot{CONFIG['telegram_bot_token']}/getUpdates"
+                params = {
+                    'offset': last_update_id + 1,
+                    'timeout': 30
+                }
+                
+                response = requests.get(url, params=params, timeout=35)
+                response.raise_for_status()
+                
+                data = response.json()
+                if data.get('ok') and data.get('result'):
+                    for update in data['result']:
+                        last_update_id = update['update_id']
+                        
+                        if 'message' in update and 'text' in update['message']:
+                            message = update['message']
+                            chat_id = message['chat']['id']
+                            text = message['text']
+                            
+                            print(f"📱 Received command: {text} from chat {chat_id}")
+                            
+                            # Handle the command
+                            asyncio.run(monitor.handle_telegram_command(text, chat_id))
+                
+            except requests.RequestException as e:
+                print(f"⚠️ Telegram polling error: {e}")
+                time.sleep(5)
+            except Exception as e:
+                print(f"❌ Telegram bot error: {e}")
+                time.sleep(5)
+    
+    bot_thread = threading.Thread(target=poll_telegram_updates)
+    bot_thread.daemon = True
+    bot_thread.start()
+    print("✅ Simple Telegram bot started!")
+    return True
 
 def main():
     """Main function"""
@@ -589,14 +597,14 @@ def main():
     
     monitor = SheinStockMonitor(CONFIG)
     
-    # Setup Telegram bot
-    telegram_setup = setup_telegram_bot(monitor)
+    # Start simple Telegram bot
+    telegram_started = start_simple_telegram_bot(monitor)
     
     # Start monitoring immediately
     print("🤖 Starting automatic monitoring...")
     monitor.start_monitoring()
     
-    if telegram_setup:
+    if telegram_started:
         print("✅ Monitor is running with Telegram commands!")
         print("💡 Use /start in Telegram to control the monitor.")
     else:
