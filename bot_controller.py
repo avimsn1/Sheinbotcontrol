@@ -582,11 +582,12 @@ Use the buttons below to interact with the monitor!
                     await self.send_telegram_message("❌ Access Denied! Admin command only.", chat_id)
                     return
                 
+                admin_count = len(self.config['admin_user_ids'])
                 admin_info = f"""
 👑 ADMIN INFORMATION
 
 🤖 Bot Status: {'🟢 RUNNING' if self.monitoring else '🔴 STOPPED'}
-👥 Admin Users: {len(self.config['admin_user_ids']}
+👥 Admin Users: {admin_count}
 📱 Your ID: {user_id}
 ⏰ Server Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
@@ -702,7 +703,8 @@ def main():
     print("🚀 Starting Shein Stock Monitor Cloud Bot...")
     print("💡 This bot runs 24/7 in the cloud!")
     print("📱 Sends Telegram alerts when stock increases")
-    print(f"👑 Admin users: {CONFIG['admin_user_ids']}")
+    admin_count = len(CONFIG['admin_user_ids'])
+    print(f"👑 Admin users: {admin_count}")
     
     monitor = SheinStockMonitor(CONFIG)
     
