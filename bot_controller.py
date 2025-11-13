@@ -12,7 +12,7 @@ import asyncio
 
 # Configuration
 CONFIG = {
-    'telegram_bot_token': '8413664821:AAHjBwysQWk3GFdJV3Bvk3Jp1vhDLpoymI8',
+    'telegram_bot_token': '8576313965:AAFMB7dTk6jU8YraDzc2yi6Bt62R2skq-0c',
     'telegram_chat_id': '1366899854',
     'admin_user_ids': ['1366899854'],
     'api_url': 'https://www.sheinindia.in/c/sverse-5939-37961',
@@ -965,3 +965,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
