@@ -16,10 +16,11 @@ CONFIG = {
     'telegram_chat_id': '1366899854',
     'admin_user_ids': ['1366899854'],
     'api_url': 'https://www.sheinindia.in/c/sverse-5939-37961',
-    'check_interval_minutes': 0.1667,
-    'min_stock_threshold': 10,
+    'check_interval_seconds': 2,  # Changed to 2 seconds
+    'min_stock_threshold': 1,     # Changed to 1 for men
     'database_path': '/tmp/shein_monitor.db',
-    'min_increase_threshold': 10
+    'min_increase_threshold_men': 1,    # Alert for even 1 stock increase in men
+    'min_increase_threshold_women': 50  # Alert only for 50+ stock increase in women
 }
 
 # Set up logging
@@ -105,71 +106,100 @@ class SheinStockMonitor:
         """Check if user is admin"""
         return str(user_id) in self.config['admin_user_ids']
     
-    def extract_gender_counts(self, data):
-        """Extract men and women counts from the JSON data"""
+    def extract_men_count(self, data):
+        """Extract ONLY men count from the JSON data"""
         men_count = 0
-        women_count = 0
         
         try:
-            if 'genderfilter-Women' in data:
-                women_data = data.get('genderfilter-Women', {})
-                women_count = women_data.get('count', 0)
-                print(f"✅ Found women count in genderfilter-Women: {women_count}")
-            
+            # Method 1: Direct key access
             if 'genderfilter-Men' in data:
                 men_data = data.get('genderfilter-Men', {})
                 men_count = men_data.get('count', 0)
                 print(f"✅ Found men count in genderfilter-Men: {men_count}")
+                return men_count
             
-            if men_count == 0 and women_count == 0:
+            # Method 2: Search in nested objects
+            if isinstance(data, dict):
                 for key, value in data.items():
                     if isinstance(value, dict):
-                        if 'genderfilter-Women' in key or ('name' in value and value.get('name') == 'Women'):
-                            women_count = value.get('count', 0)
-                            if women_count > 0:
-                                print(f"✅ Found women count in {key}: {women_count}")
-                        
+                        # Check if this is the men filter object
                         if 'genderfilter-Men' in key or ('name' in value and value.get('name') == 'Men'):
                             men_count = value.get('count', 0)
                             if men_count > 0:
                                 print(f"✅ Found men count in {key}: {men_count}")
+                                return men_count
             
-            if men_count == 0 and women_count == 0:
-                data_str = json.dumps(data)
-                
-                women_pattern = r'"genderfilter-Women":\s*\{[^}]*"count":\s*(\d+)'
-                women_match = re.search(women_pattern, data_str)
-                if women_match:
-                    women_count = int(women_match.group(1))
-                    print(f"✅ Found women count via regex: {women_count}")
-                
-                men_pattern = r'"genderfilter-Men":\s*\{[^}]*"count":\s*(\d+)'
-                men_match = re.search(men_pattern, data_str)
-                if men_match:
-                    men_count = int(men_match.group(1))
-                    print(f"✅ Found men count via regex: {men_count}")
-                
-                if women_count == 0:
-                    women_pattern2 = r'"name":"Women"[^}]*"count":\s*(\d+)'
-                    women_match2 = re.search(women_pattern2, data_str)
-                    if women_match2:
-                        women_count = int(women_match2.group(1))
-                        print(f"✅ Found women count via alternative regex: {women_count}")
-                
-                if men_count == 0:
-                    men_pattern2 = r'"name":"Men"[^}]*"count":\s*(\d+)'
-                    men_match2 = re.search(men_pattern2, data_str)
-                    if men_match2:
-                        men_count = int(men_match2.group(1))
-                        print(f"✅ Found men count via alternative regex: {men_count}")
+            # Method 3: Regex search in string representation
+            data_str = json.dumps(data)
+            men_pattern = r'"genderfilter-Men":\s*\{[^}]*"count":\s*(\d+)'
+            men_match = re.search(men_pattern, data_str)
+            if men_match:
+                men_count = int(men_match.group(1))
+                print(f"✅ Found men count via regex: {men_count}")
+                return men_count
             
+            # Method 4: Alternative regex pattern
+            men_pattern2 = r'"name":"Men"[^}]*"count":\s*(\d+)'
+            men_match2 = re.search(men_pattern2, data_str)
+            if men_match2:
+                men_count = int(men_match2.group(1))
+                print(f"✅ Found men count via alternative regex: {men_count}")
+                return men_count
+                
         except Exception as e:
-            print(f"⚠️ Error extracting gender counts: {e}")
+            print(f"⚠️ Error extracting men count: {e}")
         
-        return men_count, women_count
+        print(f"ℹ️ Men count not found, defaulting to 0")
+        return 0
+    
+    def extract_women_count(self, data):
+        """Extract women count from the JSON data (only for manual checks)"""
+        women_count = 0
+        
+        try:
+            # Method 1: Direct key access
+            if 'genderfilter-Women' in data:
+                women_data = data.get('genderfilter-Women', {})
+                women_count = women_data.get('count', 0)
+                print(f"✅ Found women count in genderfilter-Women: {women_count}")
+                return women_count
+            
+            # Method 2: Search in nested objects
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    if isinstance(value, dict):
+                        # Check if this is the women filter object
+                        if 'genderfilter-Women' in key or ('name' in value and value.get('name') == 'Women'):
+                            women_count = value.get('count', 0)
+                            if women_count > 0:
+                                print(f"✅ Found women count in {key}: {women_count}")
+                                return women_count
+            
+            # Method 3: Regex search in string representation
+            data_str = json.dumps(data)
+            women_pattern = r'"genderfilter-Women":\s*\{[^}]*"count":\s*(\d+)'
+            women_match = re.search(women_pattern, data_str)
+            if women_match:
+                women_count = int(women_match.group(1))
+                print(f"✅ Found women count via regex: {women_count}")
+                return women_count
+            
+            # Method 4: Alternative regex pattern
+            women_pattern2 = r'"name":"Women"[^}]*"count":\s*(\d+)'
+            women_match2 = re.search(women_pattern2, data_str)
+            if women_match2:
+                women_count = int(women_match2.group(1))
+                print(f"✅ Found women count via alternative regex: {women_count}")
+                return women_count
+                
+        except Exception as e:
+            print(f"⚠️ Error extracting women count: {e}")
+        
+        print(f"ℹ️ Women count not found, defaulting to 0")
+        return 0
     
     def get_shein_stock_count(self):
-        """Get total stock count and gender-specific counts from Shein API"""
+        """Get men's stock count from Shein API"""
         try:
             headers = {
                 'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -204,26 +234,23 @@ class SheinStockMonitor:
                         if 'window.goodsDetailData' in script_content:
                             json_str = script_content.split('window.goodsDetailData = ')[1].split(';')[0]
                             data = json.loads(json_str)
-                            total_stock = data.get('facets', {}).get('totalResults', 0)
-                            men_count, women_count = self.extract_gender_counts(data)
-                            print(f"✅ Found total stock: {total_stock}, Men: {men_count}, Women: {women_count}")
+                            men_count = self.extract_men_count(data)
+                            women_count = self.extract_women_count(data)  # Only extract when needed
+                            total_stock = men_count + women_count  # Calculate total based on actual counts
+                            print(f"✅ Found men count: {men_count}, Women count: {women_count}, Total: {total_stock}")
                             return total_stock, men_count, women_count
                     except (json.JSONDecodeError, IndexError, KeyError) as e:
                         print(f"⚠️ Error parsing script data: {e}")
                         continue
             
+            # Fallback: Search in response text
             response_text = response.text
-            if 'facets' in response_text and 'totalResults' in response_text:
-                pattern = r'"facets":\s*\{[^}]*"totalResults":\s*(\d+)'
-                match = re.search(pattern, response_text)
-                if match:
-                    total_stock = int(match.group(1))
-                    men_count, women_count = self.extract_gender_counts_from_text(response_text)
-                    print(f"✅ Found total stock via regex: {total_stock}, Men: {men_count}, Women: {women_count}")
-                    return total_stock, men_count, women_count
+            men_count = self.extract_men_count_from_text(response_text)
+            women_count = self.extract_women_count_from_text(response_text)
+            total_stock = men_count + women_count
             
-            print("❌ Could not find stock count in response")
-            return 0, 0, 0
+            print(f"✅ Found via text search - Men: {men_count}, Women: {women_count}, Total: {total_stock}")
+            return total_stock, men_count, women_count
             
         except requests.RequestException as e:
             print(f"❌ Error making API request: {e}")
@@ -232,42 +259,57 @@ class SheinStockMonitor:
             print(f"❌ Unexpected error during API call: {e}")
             return 0, 0, 0
     
-    def extract_gender_counts_from_text(self, response_text):
-        """Extract men and women counts from response text using regex"""
+    def extract_men_count_from_text(self, response_text):
+        """Extract men count from response text using regex"""
         men_count = 0
-        women_count = 0
         
         try:
-            women_pattern = r'"genderfilter-Women":\s*\{[^}]*"count":\s*(\d+)'
-            women_match = re.search(women_pattern, response_text)
-            if women_match:
-                women_count = int(women_match.group(1))
-                print(f"✅ Found women count via text regex: {women_count}")
-            
+            # Primary pattern
             men_pattern = r'"genderfilter-Men":\s*\{[^}]*"count":\s*(\d+)'
             men_match = re.search(men_pattern, response_text)
             if men_match:
                 men_count = int(men_match.group(1))
                 print(f"✅ Found men count via text regex: {men_count}")
+                return men_count
             
-            if women_count == 0:
-                women_pattern2 = r'"name":"Women"[^}]*"count":\s*(\d+)'
-                women_match2 = re.search(women_pattern2, response_text)
-                if women_match2:
-                    women_count = int(women_match2.group(1))
-                    print(f"✅ Found women count via alternative text regex: {women_count}")
-            
-            if men_count == 0:
-                men_pattern2 = r'"name":"Men"[^}]*"count":\s*(\d+)'
-                men_match2 = re.search(men_pattern2, response_text)
-                if men_match2:
-                    men_count = int(men_match2.group(1))
-                    print(f"✅ Found men count via alternative text regex: {men_count}")
+            # Alternative pattern
+            men_pattern2 = r'"name":"Men"[^}]*"count":\s*(\d+)'
+            men_match2 = re.search(men_pattern2, response_text)
+            if men_match2:
+                men_count = int(men_match2.group(1))
+                print(f"✅ Found men count via alternative text regex: {men_count}")
+                return men_count
                 
         except Exception as e:
-            print(f"⚠️ Error extracting gender counts from text: {e}")
+            print(f"⚠️ Error extracting men count from text: {e}")
         
-        return men_count, women_count
+        return men_count
+    
+    def extract_women_count_from_text(self, response_text):
+        """Extract women count from response text using regex (only for manual checks)"""
+        women_count = 0
+        
+        try:
+            # Primary pattern
+            women_pattern = r'"genderfilter-Women":\s*\{[^}]*"count":\s*(\d+)'
+            women_match = re.search(women_pattern, response_text)
+            if women_match:
+                women_count = int(women_match.group(1))
+                print(f"✅ Found women count via text regex: {women_count}")
+                return women_count
+            
+            # Alternative pattern
+            women_pattern2 = r'"name":"Women"[^}]*"count":\s*(\d+)'
+            women_match2 = re.search(women_pattern2, response_text)
+            if women_match2:
+                women_count = int(women_match2.group(1))
+                print(f"✅ Found women count via alternative text regex: {women_count}")
+                return women_count
+                
+        except Exception as e:
+            print(f"⚠️ Error extracting women count from text: {e}")
+        
+        return women_count
     
     def get_previous_stock(self):
         """Get the last recorded stock count from database"""
@@ -368,7 +410,7 @@ class SheinStockMonitor:
         print("🔍 Checking Shein for stock updates...")
         
         current_stock, men_count, women_count = self.get_shein_stock_count()
-        if current_stock == 0:
+        if current_stock == 0 and men_count == 0:
             error_msg = "❌ Could not retrieve stock count"
             print(error_msg)
             if manual_check and chat_id:
@@ -376,71 +418,109 @@ class SheinStockMonitor:
             return
         
         previous_stock, prev_men_count, prev_women_count = self.get_previous_stock()
-        stock_change = current_stock - previous_stock
+        men_change = men_count - prev_men_count
+        women_change = women_count - prev_women_count
         
-        print(f"📊 Stock: {current_stock} (Previous: {previous_stock}, Change: {stock_change})")
-        print(f"👕 Men: {men_count}, Women: {women_count}")
+        print(f"📊 Men's Stock: {men_count} (Previous: {prev_men_count}, Change: {men_change})")
+        print(f"👚 Women's Stock: {women_count} (Previous: {prev_women_count}, Change: {women_change})")
         
         if manual_check and chat_id:
             status_message = f"""
 📊 CURRENT STOCK STATUS:
 
+👕 Men's Items: {men_count}
+👚 Women's Items: {women_count}
 🔄 Total Items: {current_stock}
-📈 Change from last check: {stock_change}
 
-👕 Gender Breakdown:
-   • Men: {men_count} items
-   • Women: {women_count} items
+📈 Change from last check:
+   • Men: {men_change}
+   • Women: {women_change}
 
 ⏰ Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 🔗 {self.config['api_url']}
             """.strip()
             asyncio.run(self.send_telegram_message(status_message, chat_id))
+            return
         
-        if (stock_change >= self.config['min_increase_threshold'] and 
-            current_stock >= self.config['min_stock_threshold'] and
-            not manual_check):
+        # Check for men's stock alert (even 1 stock increase)
+        if (men_change >= self.config['min_increase_threshold_men'] and 
+            men_count >= self.config['min_stock_threshold']):
             
-            self.save_current_stock(current_stock, men_count, women_count, stock_change)
-            asyncio.run(self.send_stock_alert_to_all(current_stock, previous_stock, stock_change, men_count, women_count))
-            print(f"✅ Sent alert for stock increase: +{stock_change}")
+            self.save_current_stock(current_stock, men_count, women_count, men_change)
+            asyncio.run(self.send_men_stock_alert_to_all(men_count, prev_men_count, men_change))
+            print(f"✅ Sent MEN'S alert for stock increase: +{men_change}")
+        
+        # Check for women's stock alert (50+ stock increase)
+        elif (women_change >= self.config['min_increase_threshold_women'] and 
+              not manual_check):
+            
+            self.save_current_stock(current_stock, men_count, women_count, women_change)
+            asyncio.run(self.send_women_stock_alert_to_all(women_count, prev_women_count, women_change))
+            print(f"✅ Sent WOMEN'S alert for stock increase: +{women_change}")
         
         else:
-            self.save_current_stock(current_stock, men_count, women_count, stock_change)
+            self.save_current_stock(current_stock, men_count, women_count, men_change)
             if not manual_check:
                 print("✅ No significant stock change detected")
     
-    async def send_stock_alert_to_all(self, current_stock, previous_stock, increase, men_count, women_count):
-        """Send stock alert notifications to ALL users"""
+    async def send_men_stock_alert_to_all(self, current_men_count, previous_men_count, increase):
+        """Send MEN'S stock alert notifications to ALL users"""
         message = f"""
-🚨 SVerse STOCK ALERT! 🚨
+🚨 MEN'S SVerse STOCK ALERT! 🚨
 
-📈 **Stock Increased Significantly!**
+👕 **Men's Stock Increased!**
 
-🔄 Change: +{increase} items
-📊 Current Total: {current_stock} items
-📉 Previous Total: {previous_stock} items
-
-👕 Gender Breakdown:
-   • Men: {men_count} items
-   • Women: {women_count} items
+📈 Change: +{increase} items
+📊 Current Men's: {current_men_count} items
+📉 Previous Men's: {previous_men_count} items
 
 🔗 Check Now: {self.config['api_url']}
 
 ⏰ Alert Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-⚡ Quick! New SVerse items might be available!
+⚡ Quick! New Men's SVerse items available!
         """.strip()
         
         success_count, total_users = await self.broadcast_message(message)
         
         admin_report = f"""
-📊 STOCK ALERT REPORT
+📊 MEN'S STOCK ALERT REPORT
 
 ✅ Alert sent successfully!
 👥 Recipients: {success_count}/{total_users} users
-📈 Stock Increase: +{increase}
+📈 Men's Stock Increase: +{increase}
+🕒 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        """.strip()
+        
+        await self.send_telegram_message(admin_report, self.config['telegram_chat_id'])
+    
+    async def send_women_stock_alert_to_all(self, current_women_count, previous_women_count, increase):
+        """Send WOMEN'S stock alert notifications to ALL users"""
+        message = f"""
+🚨 WOMEN'S SVerse STOCK ALERT! 🚨
+
+👚 **Women's Stock Increased Significantly!**
+
+📈 Change: +{increase} items
+📊 Current Women's: {current_women_count} items
+📉 Previous Women's: {previous_women_count} items
+
+🔗 Check Now: {self.config['api_url']}
+
+⏰ Alert Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+⚡ Quick! New Women's SVerse items available!
+        """.strip()
+        
+        success_count, total_users = await self.broadcast_message(message)
+        
+        admin_report = f"""
+📊 WOMEN'S STOCK ALERT REPORT
+
+✅ Alert sent successfully!
+👥 Recipients: {success_count}/{total_users} users
+📈 Women's Stock Increase: +{increase}
 🕒 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """.strip()
         
@@ -475,7 +555,7 @@ class SheinStockMonitor:
             print("🔄 Monitoring loop started!")
             while self.monitoring:
                 self.check_stock()
-                time.sleep(self.config['check_interval_minutes'] * 60)
+                time.sleep(self.config['check_interval_seconds'])  # Now using seconds
             print("🛑 Monitoring loop stopped")
         
         self.monitor_thread = threading.Thread(target=monitor)
@@ -589,6 +669,7 @@ Use the buttons below to interact with the monitor!
             elif command == '/check_now':
                 await self.send_telegram_message("🔍 Checking stock immediately...", chat_id)
                 print("🔍 Manual stock check requested")
+                # Force a manual check
                 self.check_stock(manual_check=True, chat_id=chat_id)
             
             elif command == '/status':
@@ -607,12 +688,12 @@ Use the buttons below to interact with the monitor!
 📊 Monitor Status: {status}
 👥 Total Users: {user_count}
 ⏰ Last Check: {last_check}
-🔄 Check Interval: 5 minutes
+🔄 Check Interval: 2 seconds
 
 📈 Latest Stock Data:
+   • Men's Items: {men_count}
+   • Women's Items: {women_count}
    • Total Items: {total_stock}
-   • Men: {men_count}
-   • Women: {women_count}
 
 🔗 Monitoring: {self.config['api_url']}
                     """.strip()
@@ -623,7 +704,7 @@ Use the buttons below to interact with the monitor!
 📊 Monitor Status: {status}
 👥 Total Users: {user_count}
 ⏰ Last Check: Never
-🔄 Check Interval: 5 minutes
+🔄 Check Interval: 2 seconds
 
 📈 No stock data collected yet.
 
