@@ -16,11 +16,12 @@ CONFIG = {
     'telegram_chat_id': '1366899854',
     'admin_user_ids': ['1366899854'],
     'api_url': 'https://www.sheinindia.in/c/sverse-5939-37961',
-    'check_interval_seconds': 2,  # Changed to 2 seconds
-    'min_stock_threshold': 1,     # Changed to 1 for men
+    'check_interval_seconds': 2,
+    'min_stock_threshold': 1,
     'database_path': '/tmp/shein_monitor.db',
-    'min_increase_threshold_men': 1,    # Alert for even 1 stock increase in men
-    'min_increase_threshold_women': 50  # Alert only for 50+ stock increase in women
+    'min_increase_threshold_men': 1,
+    'min_increase_threshold_women': 50,
+    'polling_timeout': 25  # Reduced timeout
 }
 
 # Set up logging
@@ -235,8 +236,8 @@ class SheinStockMonitor:
                             json_str = script_content.split('window.goodsDetailData = ')[1].split(';')[0]
                             data = json.loads(json_str)
                             men_count = self.extract_men_count(data)
-                            women_count = self.extract_women_count(data)  # Only extract when needed
-                            total_stock = men_count + women_count  # Calculate total based on actual counts
+                            women_count = self.extract_women_count(data)
+                            total_stock = men_count + women_count
                             print(f"✅ Found men count: {men_count}, Women count: {women_count}, Total: {total_stock}")
                             return total_stock, men_count, women_count
                     except (json.JSONDecodeError, IndexError, KeyError) as e:
@@ -264,7 +265,6 @@ class SheinStockMonitor:
         men_count = 0
         
         try:
-            # Primary pattern
             men_pattern = r'"genderfilter-Men":\s*\{[^}]*"count":\s*(\d+)'
             men_match = re.search(men_pattern, response_text)
             if men_match:
@@ -272,7 +272,6 @@ class SheinStockMonitor:
                 print(f"✅ Found men count via text regex: {men_count}")
                 return men_count
             
-            # Alternative pattern
             men_pattern2 = r'"name":"Men"[^}]*"count":\s*(\d+)'
             men_match2 = re.search(men_pattern2, response_text)
             if men_match2:
@@ -290,7 +289,6 @@ class SheinStockMonitor:
         women_count = 0
         
         try:
-            # Primary pattern
             women_pattern = r'"genderfilter-Women":\s*\{[^}]*"count":\s*(\d+)'
             women_match = re.search(women_pattern, response_text)
             if women_match:
@@ -298,7 +296,6 @@ class SheinStockMonitor:
                 print(f"✅ Found women count via text regex: {women_count}")
                 return women_count
             
-            # Alternative pattern
             women_pattern2 = r'"name":"Women"[^}]*"count":\s*(\d+)'
             women_match2 = re.search(women_pattern2, response_text)
             if women_match2:
@@ -443,7 +440,6 @@ class SheinStockMonitor:
             asyncio.run(self.send_telegram_message(status_message, chat_id))
             return
         
-        # Check for men's stock alert (even 1 stock increase)
         if (men_change >= self.config['min_increase_threshold_men'] and 
             men_count >= self.config['min_stock_threshold']):
             
@@ -451,7 +447,6 @@ class SheinStockMonitor:
             asyncio.run(self.send_men_stock_alert_to_all(men_count, prev_men_count, men_change))
             print(f"✅ Sent MEN'S alert for stock increase: +{men_change}")
         
-        # Check for women's stock alert (50+ stock increase)
         elif (women_change >= self.config['min_increase_threshold_women'] and 
               not manual_check):
             
@@ -555,7 +550,7 @@ class SheinStockMonitor:
             print("🔄 Monitoring loop started!")
             while self.monitoring:
                 self.check_stock()
-                time.sleep(self.config['check_interval_seconds'])  # Now using seconds
+                time.sleep(self.config['check_interval_seconds'])
             print("🛑 Monitoring loop stopped")
         
         self.monitor_thread = threading.Thread(target=monitor)
@@ -669,7 +664,6 @@ Use the buttons below to interact with the monitor!
             elif command == '/check_now':
                 await self.send_telegram_message("🔍 Checking stock immediately...", chat_id)
                 print("🔍 Manual stock check requested")
-                # Force a manual check
                 self.check_stock(manual_check=True, chat_id=chat_id)
             
             elif command == '/status':
@@ -782,33 +776,43 @@ You have full control over the monitor.
             print(f"⚠️ Error getting user info: {e}")
         return None
 
-def robust_cleanup_webhook(token):
-    """Robust webhook cleanup with multiple attempts"""
-    max_attempts = 3
-    for attempt in range(max_attempts):
+def comprehensive_webhook_cleanup(token):
+    """Comprehensive webhook cleanup with multiple methods"""
+    print("🔄 Starting comprehensive webhook cleanup...")
+    
+    methods = [
+        # Method 1: Standard deleteWebhook
+        lambda: requests.get(f"https://api.telegram.org/bot{token}/deleteWebhook", timeout=10),
+        # Method 2: deleteWebhook with drop_pending_updates
+        lambda: requests.get(f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=true", timeout=10),
+        # Method 3: setWebhook with empty URL
+        lambda: requests.post(f"https://api.telegram.org/bot{token}/setWebhook", data={'url': ''}, timeout=10),
+        # Method 4: setWebhook with empty URL and drop pending updates
+        lambda: requests.post(f"https://api.telegram.org/bot{token}/setWebhook", 
+                            data={'url': '', 'drop_pending_updates': 'true'}, timeout=10)
+    ]
+    
+    success_count = 0
+    for i, method in enumerate(methods, 1):
         try:
-            print(f"🔄 Attempting webhook cleanup (attempt {attempt + 1}/{max_attempts})...")
-            url = f"https://api.telegram.org/bot{token}/deleteWebhook"
-            response = requests.get(url, timeout=10)
-            
+            print(f"🔄 Trying cleanup method {i}/4...")
+            response = method()
             if response.status_code == 200:
                 result = response.json()
                 if result.get('ok'):
-                    print("✅ Webhook cleanup completed successfully")
-                    return True
+                    success_count += 1
+                    print(f"✅ Cleanup method {i} successful")
                 else:
-                    print(f"⚠️ Webhook cleanup API error: {result.get('description', 'Unknown error')}")
+                    print(f"⚠️ Cleanup method {i} API error: {result.get('description', 'Unknown')}")
             else:
-                print(f"⚠️ Webhook cleanup HTTP error: {response.status_code}")
-                
+                print(f"⚠️ Cleanup method {i} HTTP error: {response.status_code}")
         except Exception as e:
-            print(f"⚠️ Webhook cleanup error (attempt {attempt + 1}): {e}")
+            print(f"⚠️ Cleanup method {i} exception: {e}")
         
-        if attempt < max_attempts - 1:
-            time.sleep(2)
+        time.sleep(1)
     
-    print("❌ Webhook cleanup failed after multiple attempts")
-    return False
+    print(f"✅ Webhook cleanup completed: {success_count}/4 methods successful")
+    return success_count > 0
 
 def check_bot_health(token):
     """Check if bot is healthy and ready"""
@@ -827,59 +831,60 @@ def check_bot_health(token):
         print(f"❌ Bot health check error: {e}")
         return False
 
-def start_robust_telegram_bot(monitor):
-    """Start a robust Telegram bot with improved conflict resolution"""
+def start_improved_telegram_bot(monitor):
+    """Start an improved Telegram bot with better conflict handling"""
     def poll_telegram_updates():
-        print("🤖 Starting robust Telegram bot...")
+        print("🤖 Starting improved Telegram bot polling...")
         
         # Step 1: Health check
         if not check_bot_health(CONFIG['telegram_bot_token']):
             print("❌ Bot health check failed, cannot start Telegram bot")
-            return False
+            return
         
-        # Step 2: Robust webhook cleanup
-        if not robust_cleanup_webhook(CONFIG['telegram_bot_token']):
-            print("⚠️ Continuing despite webhook cleanup issues...")
-        
-        time.sleep(3)  # Wait for cleanup to propagate
+        # Step 2: Comprehensive webhook cleanup
+        comprehensive_webhook_cleanup(CONFIG['telegram_bot_token'])
+        time.sleep(3)
         
         last_update_id = 0
-        error_count = 0
-        max_errors = 10
+        consecutive_errors = 0
+        max_consecutive_errors = 5
         conflict_count = 0
-        max_conflicts = 3
+        max_conflicts = 2
         
         while True:
             try:
-                # Get updates from Telegram
+                # Get updates from Telegram with shorter timeout
                 url = f"https://api.telegram.org/bot{CONFIG['telegram_bot_token']}/getUpdates"
                 params = {
                     'offset': last_update_id + 1,
-                    'timeout': 30,
+                    'timeout': CONFIG['polling_timeout'],
                     'allowed_updates': ['message']
                 }
                 
-                response = requests.get(url, params=params, timeout=35)
+                response = requests.get(url, params=params, timeout=CONFIG['polling_timeout'] + 5)
                 
                 if response.status_code == 409:
                     conflict_count += 1
-                    print(f"🔄 Conflict detected ({conflict_count}/{max_conflicts}) - cleaning up...")
+                    print(f"🔄 Conflict detected ({conflict_count}/{max_conflicts}) - performing cleanup...")
                     
                     if conflict_count >= max_conflicts:
-                        print("❌ Too many conflicts, stopping Telegram bot")
-                        break
+                        print("❌ Too many conflicts, performing deep cleanup and restarting...")
+                        comprehensive_webhook_cleanup(CONFIG['telegram_bot_token'])
+                        time.sleep(5)
+                        conflict_count = 0
+                        continue
                     
-                    # Clean up and retry
-                    robust_cleanup_webhook(CONFIG['telegram_bot_token'])
-                    time.sleep(5)
+                    comprehensive_webhook_cleanup(CONFIG['telegram_bot_token'])
+                    time.sleep(3)
                     continue
                 
-                # Reset conflict count on successful request
+                # Reset counters on successful request
                 conflict_count = 0
-                response.raise_for_status()
-                error_count = 0  # Reset error count on success
+                consecutive_errors = 0
                 
+                response.raise_for_status()
                 data = response.json()
+                
                 if data.get('ok') and data.get('result'):
                     for update in data['result']:
                         last_update_id = update['update_id']
@@ -893,39 +898,37 @@ def start_robust_telegram_bot(monitor):
                             print(f"📱 Received command: {text} from user {user_id}")
                             asyncio.run(monitor.handle_telegram_command(text, chat_id, user_id))
                 else:
-                    # No new updates, sleep briefly
-                    time.sleep(1)
+                    # No new updates
+                    time.sleep(0.1)
                 
             except requests.RequestException as e:
-                error_count += 1
-                print(f"⚠️ Telegram polling error ({error_count}/{max_errors}): {e}")
+                consecutive_errors += 1
+                print(f"⚠️ Telegram polling error ({consecutive_errors}/{max_consecutive_errors}): {e}")
                 
-                if error_count >= max_errors:
-                    print("❌ Too many errors, stopping Telegram bot")
-                    break
-                time.sleep(5)
+                if consecutive_errors >= max_consecutive_errors:
+                    print("🔧 Too many errors, performing cleanup and continuing...")
+                    comprehensive_webhook_cleanup(CONFIG['telegram_bot_token'])
+                    consecutive_errors = 0
+                    time.sleep(5)
+                else:
+                    time.sleep(2)
                 
             except Exception as e:
-                error_count += 1
-                print(f"❌ Telegram bot error ({error_count}/{max_errors}): {e}")
+                consecutive_errors += 1
+                print(f"❌ Unexpected Telegram bot error ({consecutive_errors}/{max_consecutive_errors}): {e}")
                 
-                if error_count >= max_errors:
-                    print("❌ Too many errors, stopping Telegram bot")
-                    break
-                time.sleep(5)
-        
-        if error_count >= max_errors:
-            print("🔧 Restarting Telegram bot in 30 seconds...")
-            time.sleep(30)
-            # Restart the bot
-            return start_robust_telegram_bot(monitor)
-        
-        return True
+                if consecutive_errors >= max_consecutive_errors:
+                    print("🔧 Too many errors, performing cleanup and continuing...")
+                    comprehensive_webhook_cleanup(CONFIG['telegram_bot_token'])
+                    consecutive_errors = 0
+                    time.sleep(10)
+                else:
+                    time.sleep(2)
     
     bot_thread = threading.Thread(target=poll_telegram_updates)
     bot_thread.daemon = True
     bot_thread.start()
-    print("✅ Robust Telegram bot started!")
+    print("✅ Improved Telegram bot started successfully!")
     return True
 
 def main():
@@ -938,8 +941,8 @@ def main():
     
     monitor = SheinStockMonitor(CONFIG)
     
-    # Start robust Telegram bot
-    telegram_started = start_robust_telegram_bot(monitor)
+    # Start improved Telegram bot
+    telegram_started = start_improved_telegram_bot(monitor)
     
     # Start monitoring immediately
     print("🤖 Starting automatic monitoring...")
@@ -965,4 +968,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
