@@ -20,8 +20,7 @@ CONFIG = {
     'min_stock_threshold': 1,
     'database_path': '/tmp/shein_monitor.db',
     'min_increase_threshold_men': 1,
-    'min_increase_threshold_women': 50,
-    'polling_timeout': 25  # Reduced timeout
+    'min_increase_threshold_women': 50
 }
 
 # Set up logging
@@ -776,43 +775,53 @@ You have full control over the monitor.
             print(f"⚠️ Error getting user info: {e}")
         return None
 
-def comprehensive_webhook_cleanup(token):
-    """Comprehensive webhook cleanup with multiple methods"""
-    print("🔄 Starting comprehensive webhook cleanup...")
+def ensure_polling_mode(token):
+    """Ensure the bot is in polling mode and prevent conflicts"""
+    print("🔄 Ensuring bot is in polling mode...")
     
-    methods = [
-        # Method 1: Standard deleteWebhook
-        lambda: requests.get(f"https://api.telegram.org/bot{token}/deleteWebhook", timeout=10),
-        # Method 2: deleteWebhook with drop_pending_updates
-        lambda: requests.get(f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=true", timeout=10),
-        # Method 3: setWebhook with empty URL
-        lambda: requests.post(f"https://api.telegram.org/bot{token}/setWebhook", data={'url': ''}, timeout=10),
-        # Method 4: setWebhook with empty URL and drop pending updates
-        lambda: requests.post(f"https://api.telegram.org/bot{token}/setWebhook", 
-                            data={'url': '', 'drop_pending_updates': 'true'}, timeout=10)
-    ]
-    
-    success_count = 0
-    for i, method in enumerate(methods, 1):
-        try:
-            print(f"🔄 Trying cleanup method {i}/4...")
-            response = method()
-            if response.status_code == 200:
-                result = response.json()
-                if result.get('ok'):
-                    success_count += 1
-                    print(f"✅ Cleanup method {i} successful")
-                else:
-                    print(f"⚠️ Cleanup method {i} API error: {result.get('description', 'Unknown')}")
+    # Method 1: Delete any existing webhook
+    try:
+        url = f"https://api.telegram.org/bot{token}/deleteWebhook"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('ok'):
+                print("✅ Webhook deleted successfully")
             else:
-                print(f"⚠️ Cleanup method {i} HTTP error: {response.status_code}")
-        except Exception as e:
-            print(f"⚠️ Cleanup method {i} exception: {e}")
-        
-        time.sleep(1)
+                print(f"ℹ️ Webhook delete result: {result.get('description')}")
+    except Exception as e:
+        print(f"⚠️ Error deleting webhook: {e}")
     
-    print(f"✅ Webhook cleanup completed: {success_count}/4 methods successful")
-    return success_count > 0
+    # Method 2: Set empty webhook URL
+    try:
+        url = f"https://api.telegram.org/bot{token}/setWebhook"
+        payload = {'url': ''}
+        response = requests.post(url, data=payload, timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('ok'):
+                print("✅ Empty webhook set successfully")
+            else:
+                print(f"ℹ️ Empty webhook result: {result.get('description')}")
+    except Exception as e:
+        print(f"⚠️ Error setting empty webhook: {e}")
+    
+    # Method 3: Get webhook info to confirm
+    try:
+        url = f"https://api.telegram.org/bot{token}/getWebhookInfo"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('ok'):
+                webhook_info = result.get('result', {})
+                if not webhook_info.get('url'):
+                    print("✅ Confirmed: No active webhook (polling mode ready)")
+                else:
+                    print(f"⚠️ Webhook still active: {webhook_info.get('url')}")
+    except Exception as e:
+        print(f"⚠️ Error getting webhook info: {e}")
+    
+    print("✅ Bot is ready for polling mode")
 
 def check_bot_health(token):
     """Check if bot is healthy and ready"""
@@ -831,60 +840,47 @@ def check_bot_health(token):
         print(f"❌ Bot health check error: {e}")
         return False
 
-def start_improved_telegram_bot(monitor):
-    """Start an improved Telegram bot with better conflict handling"""
+def start_conflict_free_telegram_bot(monitor):
+    """Start a conflict-free Telegram bot using proper polling"""
     def poll_telegram_updates():
-        print("🤖 Starting improved Telegram bot polling...")
+        print("🤖 Starting conflict-free Telegram bot polling...")
         
         # Step 1: Health check
         if not check_bot_health(CONFIG['telegram_bot_token']):
             print("❌ Bot health check failed, cannot start Telegram bot")
             return
         
-        # Step 2: Comprehensive webhook cleanup
-        comprehensive_webhook_cleanup(CONFIG['telegram_bot_token'])
-        time.sleep(3)
+        # Step 2: Ensure polling mode
+        ensure_polling_mode(CONFIG['telegram_bot_token'])
         
         last_update_id = 0
-        consecutive_errors = 0
-        max_consecutive_errors = 5
-        conflict_count = 0
-        max_conflicts = 2
+        error_count = 0
+        max_errors = 10
         
         while True:
             try:
-                # Get updates from Telegram with shorter timeout
+                # Get updates from Telegram with NO timeout (short polling)
                 url = f"https://api.telegram.org/bot{CONFIG['telegram_bot_token']}/getUpdates"
                 params = {
                     'offset': last_update_id + 1,
-                    'timeout': CONFIG['polling_timeout'],
+                    'timeout': 0,  # No long polling - prevents conflicts
                     'allowed_updates': ['message']
                 }
                 
-                response = requests.get(url, params=params, timeout=CONFIG['polling_timeout'] + 5)
+                response = requests.get(url, params=params, timeout=10)
                 
+                # If we get a conflict, it means someone else is using webhooks
                 if response.status_code == 409:
-                    conflict_count += 1
-                    print(f"🔄 Conflict detected ({conflict_count}/{max_conflicts}) - performing cleanup...")
-                    
-                    if conflict_count >= max_conflicts:
-                        print("❌ Too many conflicts, performing deep cleanup and restarting...")
-                        comprehensive_webhook_cleanup(CONFIG['telegram_bot_token'])
-                        time.sleep(5)
-                        conflict_count = 0
-                        continue
-                    
-                    comprehensive_webhook_cleanup(CONFIG['telegram_bot_token'])
-                    time.sleep(3)
+                    print("❌ CONFLICT DETECTED: Another service is using webhooks with this bot token!")
+                    print("💡 Solution: Stop any other services using this bot token")
+                    print("🔄 This bot will continue monitoring but Telegram commands may not work")
+                    time.sleep(30)  # Wait before retrying
                     continue
                 
-                # Reset counters on successful request
-                conflict_count = 0
-                consecutive_errors = 0
-                
                 response.raise_for_status()
-                data = response.json()
+                error_count = 0  # Reset error count on success
                 
+                data = response.json()
                 if data.get('ok') and data.get('result'):
                     for update in data['result']:
                         last_update_id = update['update_id']
@@ -898,37 +894,35 @@ def start_improved_telegram_bot(monitor):
                             print(f"📱 Received command: {text} from user {user_id}")
                             asyncio.run(monitor.handle_telegram_command(text, chat_id, user_id))
                 else:
-                    # No new updates
-                    time.sleep(0.1)
+                    # No new updates, sleep briefly to avoid rate limits
+                    time.sleep(0.5)
                 
             except requests.RequestException as e:
-                consecutive_errors += 1
-                print(f"⚠️ Telegram polling error ({consecutive_errors}/{max_consecutive_errors}): {e}")
+                error_count += 1
+                print(f"⚠️ Telegram polling error ({error_count}/{max_errors}): {e}")
                 
-                if consecutive_errors >= max_consecutive_errors:
-                    print("🔧 Too many errors, performing cleanup and continuing...")
-                    comprehensive_webhook_cleanup(CONFIG['telegram_bot_token'])
-                    consecutive_errors = 0
-                    time.sleep(5)
+                if error_count >= max_errors:
+                    print("🔧 Too many errors, waiting before continuing...")
+                    time.sleep(30)
+                    error_count = 0
                 else:
                     time.sleep(2)
                 
             except Exception as e:
-                consecutive_errors += 1
-                print(f"❌ Unexpected Telegram bot error ({consecutive_errors}/{max_consecutive_errors}): {e}")
+                error_count += 1
+                print(f"❌ Unexpected Telegram bot error ({error_count}/{max_errors}): {e}")
                 
-                if consecutive_errors >= max_consecutive_errors:
-                    print("🔧 Too many errors, performing cleanup and continuing...")
-                    comprehensive_webhook_cleanup(CONFIG['telegram_bot_token'])
-                    consecutive_errors = 0
-                    time.sleep(10)
+                if error_count >= max_errors:
+                    print("🔧 Too many errors, waiting before continuing...")
+                    time.sleep(30)
+                    error_count = 0
                 else:
                     time.sleep(2)
     
     bot_thread = threading.Thread(target=poll_telegram_updates)
     bot_thread.daemon = True
     bot_thread.start()
-    print("✅ Improved Telegram bot started successfully!")
+    print("✅ Conflict-free Telegram bot started successfully!")
     return True
 
 def main():
@@ -941,8 +935,8 @@ def main():
     
     monitor = SheinStockMonitor(CONFIG)
     
-    # Start improved Telegram bot
-    telegram_started = start_improved_telegram_bot(monitor)
+    # Start conflict-free Telegram bot
+    telegram_started = start_conflict_free_telegram_bot(monitor)
     
     # Start monitoring immediately
     print("🤖 Starting automatic monitoring...")
