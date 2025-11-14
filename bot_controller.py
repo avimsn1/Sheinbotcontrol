@@ -19,7 +19,7 @@ CONFIG = {
     'check_interval_seconds': 2,
     'min_stock_threshold': 1,
     'database_path': '/tmp/shein_monitor.db',
-    'min_increase_threshold_men': 1,
+    'min_increase_threshold_men': 2,  # Changed to 2 as requested
     'min_increase_threshold_women': 50
 }
 
@@ -36,6 +36,7 @@ class SheinStockMonitor:
         self.monitoring = False
         self.monitor_thread = None
         self.telegram_running = False
+        self.last_notified_stock = 0  # Track last notified stock level
         self.setup_database()
         print("🤖 Shein Monitor initialized")
     
@@ -67,6 +68,17 @@ class SheinStockMonitor:
                 is_active BOOLEAN DEFAULT TRUE,
                 joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_interaction TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Add table for tracking notifications to prevent duplicates
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stock_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock_level INTEGER,
+                notification_type TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                notified_count INTEGER DEFAULT 0
             )
         ''')
         
@@ -316,11 +328,29 @@ class SheinStockMonitor:
             return result[0], result[1], result[2]
         return 0, 0, 0
     
-    def save_current_stock(self, current_stock, men_count, women_count, change=0):
+    def save_current_stock(self, current_stock, men_count, women_count, change=0, notified=False):
         """Save current stock count to database"""
         cursor = self.conn.cursor()
-        cursor.execute('INSERT INTO stock_history (total_stock, men_count, women_count, stock_change) VALUES (?, ?, ?, ?)', 
-                      (current_stock, men_count, women_count, change))
+        cursor.execute('INSERT INTO stock_history (total_stock, men_count, women_count, stock_change, notified) VALUES (?, ?, ?, ?, ?)', 
+                      (current_stock, men_count, women_count, change, notified))
+        self.conn.commit()
+    
+    def has_stock_been_notified(self, stock_level, notification_type="men_stock"):
+        """Check if we've already notified for this specific stock level"""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'SELECT id FROM stock_notifications WHERE stock_level = ? AND notification_type = ? AND timestamp > datetime("now", "-1 hour")',
+            (stock_level, notification_type)
+        )
+        return cursor.fetchone() is not None
+    
+    def record_notification(self, stock_level, notification_type="men_stock"):
+        """Record that we've sent a notification for this stock level"""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'INSERT INTO stock_notifications (stock_level, notification_type) VALUES (?, ?)',
+            (stock_level, notification_type)
+        )
         self.conn.commit()
     
     async def send_telegram_message(self, message, chat_id=None):
@@ -437,26 +467,40 @@ class SheinStockMonitor:
 🔗 {self.config['api_url']}
             """.strip()
             asyncio.run(self.send_telegram_message(status_message, chat_id))
+            # Save current stock for manual checks too
+            self.save_current_stock(current_stock, men_count, women_count, men_change)
             return
         
-        if (men_change >= self.config['min_increase_threshold_men'] and 
-            men_count >= self.config['min_stock_threshold']):
-            
-            self.save_current_stock(current_stock, men_count, women_count, men_change)
-            asyncio.run(self.send_men_stock_alert_to_all(men_count, prev_men_count, men_change))
-            print(f"✅ Sent MEN'S alert for stock increase: +{men_change}")
+        # Check for significant men's stock increase (at least 2 items as requested)
+        men_stock_increased = (
+            men_change >= self.config['min_increase_threshold_men'] and 
+            men_count >= self.config['min_stock_threshold'] and
+            not self.has_stock_been_notified(men_count, "men_stock")
+        )
         
-        elif (women_change >= self.config['min_increase_threshold_women'] and 
-              not manual_check):
-            
-            self.save_current_stock(current_stock, men_count, women_count, women_change)
+        # Check for significant women's stock increase
+        women_stock_increased = (
+            women_change >= self.config['min_increase_threshold_women'] and 
+            not self.has_stock_been_notified(women_count, "women_stock")
+        )
+        
+        if men_stock_increased:
+            print(f"🚨 Men's stock significantly increased: +{men_change}")
+            self.save_current_stock(current_stock, men_count, women_count, men_change, True)
+            self.record_notification(men_count, "men_stock")
+            asyncio.run(self.send_men_stock_alert_to_all(men_count, prev_men_count, men_change))
+        
+        elif women_stock_increased:
+            print(f"🚨 Women's stock significantly increased: +{women_change}")
+            self.save_current_stock(current_stock, men_count, women_count, women_change, True)
+            self.record_notification(women_count, "women_stock")
             asyncio.run(self.send_women_stock_alert_to_all(women_count, prev_women_count, women_change))
-            print(f"✅ Sent WOMEN'S alert for stock increase: +{women_change}")
         
         else:
-            self.save_current_stock(current_stock, men_count, women_count, men_change)
+            # Save current stock without notification
+            self.save_current_stock(current_stock, men_count, women_count, men_change, False)
             if not manual_check:
-                print("✅ No significant stock change detected")
+                print("✅ No significant stock change detected or already notified")
     
     async def send_men_stock_alert_to_all(self, current_men_count, previous_men_count, increase):
         """Send MEN'S stock alert notifications to ALL users"""
